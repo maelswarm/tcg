@@ -5241,9 +5241,11 @@ const HEADERS_OUT = {
   'Cache-Control': 'no-cache',
 };
 
+const HTTP_TIMEOUT_MS = 20000; // 20 s per request to PriceCharting
+
 function httpGet(targetUrl) {
   return new Promise((resolve, reject) => {
-    https.get(targetUrl, { headers: HEADERS_OUT }, (res) => {
+    const req = https.get(targetUrl, { headers: HEADERS_OUT }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         const loc = res.headers.location.startsWith('http')
           ? res.headers.location
@@ -5254,7 +5256,9 @@ function httpGet(targetUrl) {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => resolve({ html: data, status: res.statusCode }));
-    }).on('error', reject);
+    });
+    req.setTimeout(HTTP_TIMEOUT_MS, () => { req.destroy(new Error('Request timed out')); });
+    req.on('error', reject);
   });
 }
 
@@ -5279,6 +5283,7 @@ function httpPost(targetUrl, postData) {
       res.on('data', c => data += c);
       res.on('end', () => resolve({ html: data, status: res.statusCode }));
     });
+    req.setTimeout(HTTP_TIMEOUT_MS, () => { req.destroy(new Error('Request timed out')); });
     req.on('error', reject);
     req.write(body);
     req.end();
@@ -5378,7 +5383,7 @@ function parseRows(html) {
     const cardUrl = titleMatch[1].startsWith('http') ? titleMatch[1] : `https://www.pricecharting.com${titleMatch[1]}`;
     const cardName = htmlDecode(titleMatch[2].trim());
     const imgMatch = /<img[^>]*src="([^"]+)"[^>]*>/i.exec(rowHtml);
-    const imgUrl = imgMatch ? imgMatch[1] : '';
+    const imgUrl = imgMatch ? imgMatch[1].replace(/\/60\.jpg$/, '/1600.jpg') : '';
     const extractPrice = (cls) => {
       const re = new RegExp(`<td[^>]*class="[^"]*${cls}[^"]*"[^>]*>[\\s\\S]*?<span[^>]*class="[^"]*js-price[^"]*"[^>]*>([^<]+)<\\/span>`, 'i');
       const mx = re.exec(rowHtml);
@@ -5428,6 +5433,9 @@ async function fetchSetPages(slug) {
   const baseUrl = `https://www.pricecharting.com/console/${encodeURIComponent(slug)}`;
   const allCards = [];
   const { html: html1, status: s1 } = await httpGet(baseUrl);
+  if (s1 !== 200) {
+    console.error(`[card-fetch] FAIL ${slug} — page 1 HTTP ${s1} — url: ${baseUrl} — body snippet: ${html1.slice(0, 200)}`);
+  }
   if (s1 === 404) return { error: 'Set not found', cards: [], count: 0 };
 
   const titleMatch = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html1);
@@ -5439,25 +5447,38 @@ async function fetchSetPages(slug) {
   const MAX_PAGES = 30; // safety cap (~1,500 items max per set)
   while (nextData && page <= MAX_PAGES) {
     try {
-      const { html: pageHtml } = await httpPost(baseUrl, {
+      const { html: pageHtml, status: sp } = await httpPost(baseUrl, {
         sort: nextData.sort || '',
         when: nextData.when || 'none',
         'release-date': nextData['release-date'] || '',
         cursor: nextData.cursor,
       });
+      if (sp !== 200) {
+        console.error(`[card-fetch] FAIL ${slug} — page ${page} HTTP ${sp} — url: ${baseUrl} — body snippet: ${pageHtml.slice(0, 200)}`);
+        break;
+      }
       const newCards = parseRows(pageHtml);
       if (newCards.length === 0) break;
       allCards.push(...newCards);
       nextData = parseNextCursor(pageHtml);
       page++;
-      // Small delay between pages to be respectful
-      if (nextData) await new Promise(r => setTimeout(r, 150));
-    } catch { break; }
+      // Throttle between pages to avoid rate limiting
+      await new Promise(r => setTimeout(r, 1000 + Math.random() * 500));
+    } catch (err) {
+      console.error(`[card-fetch] FAIL ${slug} — page ${page} threw: ${err.message}`);
+      break;
+    }
+  }
+
+  if (allCards.length === 0) {
+    console.error(`[card-fetch] EMPTY ${slug} — 0 cards parsed after ${page - 1} page(s) — url: ${baseUrl}`);
   }
 
   const sealedItems = allCards.filter(c => c.sealed);
   const result = { slug, title, cards: allCards, count: allCards.length, sealedCount: sealedItems.length, source: baseUrl };
-  cardCache.set(slug, { data: result, fetchedAt: Date.now() });
+  if (allCards.length > 0) {
+    cardCache.set(slug, { data: result, fetchedAt: Date.now() });
+  }
   console.log(`[card-cache] FETCHED ${slug} (${allCards.length} items, ${sealedItems.length} sealed, ${page-1} pages)`);
   return result;
 }
@@ -5494,6 +5515,10 @@ const server = http.createServer(async (req, res) => {
   if (reqPath === '/api/set') {
     const slug = query.slug;
     if (!slug) { res.writeHead(400); res.end(JSON.stringify({ error: 'slug required' })); return; }
+    if (query.force === 'true') {
+      cardCache.delete(slug);
+      console.log(`[card-cache] BUSTED ${slug}`);
+    }
     try {
       const data = await fetchSetPages(slug);
       res.writeHead(200, { 'Content-Type': 'application/json' });

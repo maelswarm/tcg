@@ -43,6 +43,8 @@ const S = {
   loadId: 0,
   cacheAgeSeconds: 0,
   cacheSets: 0,
+  setsView: false,
+  setStats: new Map(), // slug → { count, avgUngraded, topUngraded, topPsa10 }
 };
 
 // ── DOM ───────────────────────────────────────────────────────────────────
@@ -78,6 +80,16 @@ const E = {
   footerCount:   g('footer-count'),
   cachePill:     g('cache-pill'),
   totalCount:    g('total-sets-count'),
+  imgModal:      g('img-modal'),
+  imgModalImg:   g('img-modal-img'),
+  imgModalName:  g('img-modal-name'),
+  imgModalClose: g('img-modal-close'),
+  imgModalBackdrop: g('img-modal-backdrop'),
+  btnViewSets:   g('btn-view-sets'),
+  stateSetsView: g('state-sets-view'),
+  setsOvTitle:   g('sets-ov-title'),
+  btnLoadAllStats: g('btn-load-all-stats'),
+  setsOvTbody:   g('sets-ov-tbody'),
   sidebarToggle: g('sidebar-toggle'),
   sidebarOverlay:g('sidebar-overlay'),
   sidebar:       g('sidebar'),
@@ -141,11 +153,12 @@ function fmtAge(sec) {
 
 // ── Show/hide states ──────────────────────────────────────────────────────
 function showState(name) {
-  E.stateWelcome.style.display  = name === 'welcome'   ? 'flex' : 'none';
-  E.stateLoading.style.display  = name === 'loading'   ? 'flex' : 'none';
-  E.stateError.style.display    = name === 'error'     ? 'flex' : 'none';
-  E.stateNoRes.style.display    = name === 'noresults' ? 'flex' : 'none';
-  E.tableWrap.style.display     = name === 'table'     ? 'block': 'none';
+  E.stateWelcome.style.display  = name === 'welcome'    ? 'flex' : 'none';
+  E.stateLoading.style.display  = name === 'loading'    ? 'flex' : 'none';
+  E.stateError.style.display    = name === 'error'      ? 'flex' : 'none';
+  E.stateNoRes.style.display    = name === 'noresults'  ? 'flex' : 'none';
+  E.tableWrap.style.display     = name === 'table'      ? 'block': 'none';
+  E.stateSetsView.style.display = name === 'sets-view'  ? 'flex' : 'none';
 }
 
 // ── Fetch ─────────────────────────────────────────────────────────────────
@@ -154,9 +167,10 @@ async function fetchGames() {
   const r = await fetch(`${API}/api/games`);
   return r.json();
 }
-async function fetchSet(slug) {
+async function fetchSet(slug, force = false) {
   if (!API) throw new Error('No API proxy — run: node server/server.js');
-  const r = await fetch(`${API}/api/set?slug=${encodeURIComponent(slug)}&pages=5`);
+  const url = `${API}/api/set?slug=${encodeURIComponent(slug)}&pages=5${force ? '&force=true' : ''}`;
+  const r = await fetch(url);
   const d = await r.json();
   if (d.error && !d.cards?.length) throw new Error(d.error);
   return d;
@@ -213,7 +227,12 @@ function switchGame(key) {
   E.setExtLink.style.display = 'none';
   E.statsBar.style.display = 'none';
   E.footerBar.style.display = 'none';
-  showState('welcome');
+  if (S.setsView) {
+    renderSetsOverview();
+    showState('sets-view');
+  } else {
+    showState('welcome');
+  }
   renderSetList();
   updateCachePill();
 }
@@ -270,6 +289,8 @@ function renderSetList() {
 
 // ── Load set ───────────────────────────────────────────────────────────────
 async function loadSet(slug, name, btn) {
+  // Exit sets overview if active (loadSet will handle the state transition itself)
+  if (S.setsView) exitSetsView(false);
   // Close mobile sidebar when user selects a set
   if (isMobile()) closeSidebar();
   if (S.slug === slug && S.allCards.length > 0) return; // already loaded
@@ -290,56 +311,68 @@ async function loadSet(slug, name, btn) {
   E.loadingLabel.textContent = `Loading ${name}…`;
   showState('loading');
 
-  try {
-    const data = await fetchSet(slug);
+  const MAX_ATTEMPTS = 3;
+  const RETRY_DELAYS = [500, 1500];
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (lid !== S.loadId) return;
-
-    S.allCards = data.cards || [];
-    if (btn) btn.classList.remove('loading');
-
-    // Clean up title
-    const cleanTitle = (data.title || name)
-      .replace(/^Prices for\s+/i, '')
-      .replace(/\s+(?:Pokemon|Magic|YuGiOh|Star Wars|One Piece|Digimon|Dragon Ball|Lorcana|Gundam|Riftbound)\s+Cards.*$/i, '')
-      .trim();
-    E.setTitle.textContent = cleanTitle || name;
-
-    if (data.source) {
-      E.setExtLink.href = data.source;
-      E.setExtLink.style.display = 'inline';
+    if (attempt > 1) {
+      E.loadingLabel.textContent = `Loading ${name}… (retry ${attempt - 1}/${MAX_ATTEMPTS - 1})`;
+      await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 2]));
+      if (lid !== S.loadId) return;
     }
+    try {
+      const data = await fetchSet(slug);
+      if (lid !== S.loadId) return;
 
-    // Cache age indicator
-    if (data.fromCache && data.cachedAt) {
-      const ageSec = Math.round((Date.now() - data.cachedAt) / 1000);
-      E.statCache.style.display = 'flex';
-      E.statCacheAge.textContent = fmtAge(ageSec);
-      // Update cache pill to show this set's cache age
-      S.cacheAgeSeconds = ageSec;
-    } else {
-      E.statCache.style.display = 'none';
-      // Fresh data — reset cache pill to 0
-      S.cacheAgeSeconds = 0;
+      S.allCards = data.cards || [];
+      if (btn) btn.classList.remove('loading');
+
+      // Clean up title
+      const cleanTitle = (data.title || name)
+        .replace(/^Prices for\s+/i, '')
+        .replace(/\s+(?:Pokemon|Magic|YuGiOh|Star Wars|One Piece|Digimon|Dragon Ball|Lorcana|Gundam|Riftbound)\s+Cards.*$/i, '')
+        .trim();
+      E.setTitle.textContent = cleanTitle || name;
+
+      if (data.source) {
+        E.setExtLink.href = data.source;
+        E.setExtLink.style.display = 'inline';
+      }
+
+      // Cache age indicator
+      if (data.fromCache && data.cachedAt) {
+        const ageSec = Math.round((Date.now() - data.cachedAt) / 1000);
+        E.statCache.style.display = 'flex';
+        E.statCacheAge.textContent = fmtAge(ageSec);
+        S.cacheAgeSeconds = ageSec;
+      } else {
+        E.statCache.style.display = 'none';
+        S.cacheAgeSeconds = 0;
+      }
+      const mins = Math.round(S.cacheAgeSeconds / 60);
+      E.cachePill.textContent = `Sets: ${S.cacheSets} · ${mins}m old`;
+      E.cachePill.className = `cache-pill${S.cacheAgeSeconds < 120 ? ' fresh' : ''}`;
+
+      S.query = '';
+      E.cardSearch.value = '';
+      S.sort = 'default';
+      E.sortSelect.value = 'default';
+      document.querySelectorAll('.price-table th.sortable').forEach(t => t.classList.remove('sort-active'));
+
+      cacheSetStats(slug, S.allCards);
+      renderCards();
+      updateStats();
+      return;
+    } catch (err) {
+      if (lid !== S.loadId) return;
+      lastErr = err;
     }
-    // Update cache pill display
-    const mins = Math.round(S.cacheAgeSeconds / 60);
-    E.cachePill.textContent = `Sets: ${S.cacheSets} · ${mins}m old`;
-    E.cachePill.className = `cache-pill${S.cacheAgeSeconds < 120 ? ' fresh' : ''}`;
-
-    S.query = '';
-    E.cardSearch.value = '';
-    S.sort = 'default';
-    E.sortSelect.value = 'default';
-    document.querySelectorAll('.price-table th.sortable').forEach(t => t.classList.remove('sort-active'));
-
-    renderCards();
-    updateStats();
-  } catch (err) {
-    if (lid !== S.loadId) return;
-    if (btn) btn.classList.remove('loading', 'active');
-    E.errorMsg.textContent = err.message || 'Failed to load. Try again.';
-    showState('error');
   }
+  // All attempts exhausted
+  if (btn) btn.classList.remove('loading', 'active');
+  E.errorMsg.textContent = lastErr?.message || 'Failed to load. Try again.';
+  showState('error');
 }
 
 // ── Stats ──────────────────────────────────────────────────────────────────
@@ -487,14 +520,52 @@ function pCard(p, cls) {
 }
 
 // ── Search & sort events ──────────────────────────────────────────────────
+function filterSetsOverview(query) {
+  const q = query.toLowerCase().trim();
+  E.setsOvTbody.querySelectorAll('tr.sov-row').forEach(row => {
+    const name = row.querySelector('.sov-set-name')?.textContent?.toLowerCase() || '';
+    row.style.display = !q || name.includes(q) ? '' : 'none';
+  });
+}
+
 let searchTimer;
 E.cardSearch.addEventListener('input', e => {
+  if (S.setsView) { filterSetsOverview(e.target.value); return; }
   S.query = e.target.value;
   clearTimeout(searchTimer);
   searchTimer = setTimeout(renderCards, 160);
 });
 
+function sortSetsOverview(sortValue) {
+  const rows = Array.from(E.setsOvTbody.querySelectorAll('tr.sov-row'));
+  const stat = (row, key) => S.setStats.get(row.dataset.slug)?.[key] ?? null;
+  const nullsLast = (a, b, desc) => {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return desc ? b - a : a - b;
+  };
+  rows.sort((a, b) => {
+    switch (sortValue) {
+      case 'name-asc':    return (a.querySelector('.sov-set-name')?.textContent || '').localeCompare(b.querySelector('.sov-set-name')?.textContent || '');
+      case 'price-desc':  return nullsLast(stat(a, 'avgUngraded'), stat(b, 'avgUngraded'), true);
+      case 'price-asc':   return nullsLast(stat(a, 'avgUngraded'), stat(b, 'avgUngraded'), false);
+      case 'psa10-desc':  return nullsLast(stat(a, 'topPsa10'),    stat(b, 'topPsa10'),    true);
+      case 'grade9-desc': return nullsLast(stat(a, 'topUngraded'), stat(b, 'topUngraded'), true);
+      default: { // restore original index order
+        const ai = parseInt(a.querySelector('.td-num')?.textContent || 0);
+        const bi = parseInt(b.querySelector('.td-num')?.textContent || 0);
+        return ai - bi;
+      }
+    }
+  });
+  const frag = document.createDocumentFragment();
+  rows.forEach(r => frag.appendChild(r));
+  E.setsOvTbody.appendChild(frag);
+}
+
 E.sortSelect.addEventListener('change', e => {
+  if (S.setsView) { sortSetsOverview(e.target.value); return; }
   S.sort = e.target.value;
   document.querySelectorAll('.price-table th.sortable').forEach(t => t.classList.remove('sort-active'));
   renderCards();
@@ -587,6 +658,175 @@ async function refreshCacheNow() {
   }
 }
 
+// ── Sets Overview ─────────────────────────────────────────────────────────
+function calcStats(cards) {
+  const regular = cards.filter(c => !c.sealed);
+  const ungraded = regular.map(c => parsePrice(c.ungraded)).filter(n => n != null);
+  const psa10    = regular.map(c => parsePrice(c.psa10)).filter(n => n != null);
+  return {
+    count:       cards.length,
+    avgUngraded: ungraded.length ? ungraded.reduce((a,b) => a+b, 0) / ungraded.length : null,
+    topUngraded: ungraded.length ? Math.max(...ungraded) : null,
+    topPsa10:    psa10.length    ? Math.max(...psa10)    : null,
+  };
+}
+
+function cacheSetStats(slug, cards) {
+  const stats = calcStats(cards);
+  S.setStats.set(slug, stats);
+  // Update row in sets overview if it's currently visible
+  const row = E.setsOvTbody?.querySelector(`tr[data-slug="${CSS.escape(slug)}"]`);
+  if (row) updateSovRow(row, stats);
+}
+
+function updateSovRow(row, stats) {
+  const cells = row.querySelectorAll('td');
+  if (cells.length < 7) return;
+  cells[2].textContent = stats.count;
+  cells[3].innerHTML = `<span class="sov-price">${fmt(stats.avgUngraded)}</span>`;
+  cells[4].innerHTML = `<span class="sov-price">${fmt(stats.topUngraded)}</span>`;
+  cells[5].innerHTML = `<span class="sov-price-psa">${fmt(stats.topPsa10)}</span>`;
+  cells[6].innerHTML = '';
+}
+
+function enterSetsView() {
+  if (S.setsView) { exitSetsView(); return; }
+  S.setsView = true;
+  E.btnViewSets.classList.add('active');
+  E.statsBar.style.display = 'none';
+  E.footerBar.style.display = 'none';
+  E.setExtLink.style.display = 'none';
+  // Clear card search, reset sort, deselect sidebar items
+  E.cardSearch.value = '';
+  E.cardSearch.placeholder = 'Filter sets…';
+  E.sortSelect.value = 'default';
+  document.querySelectorAll('.set-item').forEach(el => {
+    el.classList.remove('active');
+    el.setAttribute('aria-selected', 'false');
+  });
+  renderSetsOverview();
+  showState('sets-view');
+}
+
+function exitSetsView(restoreState = true) {
+  S.setsView = false;
+  E.btnViewSets.classList.remove('active');
+  E.cardSearch.value = '';
+  E.cardSearch.placeholder = 'Search cards…';
+  E.sortSelect.value = S.sort; // restore card sort state
+  // Re-highlight the active sidebar item if a set was loaded
+  if (S.slug) {
+    const activeItem = document.querySelector(`.set-item[data-slug="${CSS.escape(S.slug)}"]`);
+    if (activeItem) {
+      activeItem.classList.add('active');
+      activeItem.setAttribute('aria-selected', 'true');
+    }
+  }
+  if (!restoreState) return;
+  if (S.slug && S.allCards.length) {
+    E.statsBar.style.display = 'flex';
+    E.footerBar.style.display = 'flex';
+    showState('table');
+  } else {
+    showState('welcome');
+  }
+}
+
+function renderSetsOverview() {
+  const game   = S.games[S.game];
+  const sets   = game?.sets || [];
+  const label  = game?.label || 'Sets';
+  E.setsOvTitle.textContent = `${label} — ${sets.length} Sets`;
+  E.setsOvTbody.innerHTML = '';
+
+  const CHUNK = 60;
+  let i = 0;
+  function renderChunk() {
+    const frag = document.createDocumentFragment();
+    const end = Math.min(i + CHUNK, sets.length);
+    for (; i < end; i++) {
+      const s = sets[i];
+      const stats = S.setStats.get(s.slug);
+      const tr = document.createElement('tr');
+      tr.className = 'sov-row';
+      tr.dataset.slug = s.slug;
+      tr.innerHTML = `
+        <td class="td-num">${i + 1}</td>
+        <td class="sov-set-name">${esc(s.name)}</td>
+        <td class="td-price">${stats ? stats.count : '<span class="sov-price-empty">—</span>'}</td>
+        <td class="td-price">${stats ? `<span class="sov-price">${fmt(stats.avgUngraded)}</span>` : '<span class="sov-price-empty">—</span>'}</td>
+        <td class="td-price">${stats ? `<span class="sov-price">${fmt(stats.topUngraded)}</span>` : '<span class="sov-price-empty">—</span>'}</td>
+        <td class="td-price">${stats ? `<span class="sov-price-psa">${fmt(stats.topPsa10)}</span>` : '<span class="sov-price-empty">—</span>'}</td>
+        <td class="td-action">${stats ? '' : `<button class="btn-load-row" data-slug="${escA(s.slug)}" data-name="${escA(s.name)}">Load</button>`}</td>`;
+      // Click row to navigate to set
+      tr.addEventListener('click', (e) => {
+        if (e.target.classList.contains('btn-load-row')) return;
+        const btn = document.querySelector(`.set-item[data-slug="${CSS.escape(s.slug)}"]`);
+        loadSet(s.slug, s.name, btn);
+      });
+      frag.appendChild(tr);
+    }
+    E.setsOvTbody.appendChild(frag);
+    if (i < sets.length) requestAnimationFrame(renderChunk);
+  }
+  renderChunk();
+}
+
+async function loadSetStatsRow(slug, name, row, force = false) {
+  // Show spinners in stat cells
+  const cells = row.querySelectorAll('td');
+  if (cells.length >= 7) {
+    cells[2].innerHTML = '<span class="sov-spinner"></span>';
+    cells[3].innerHTML = '<span class="sov-spinner"></span>';
+    cells[4].innerHTML = '<span class="sov-spinner"></span>';
+    cells[5].innerHTML = '<span class="sov-spinner"></span>';
+    cells[6].innerHTML = '';
+  }
+  const MAX_ATTEMPTS = 3;
+  const RETRY_DELAYS = [500, 1500];
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (attempt > 1) await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 2]));
+    try {
+      const data = await fetchSet(slug, force);
+      const cards = data.cards || [];
+      if (cards.length === 0 && attempt < MAX_ATTEMPTS) { force = false; continue; }
+      if (cards.length > 0) {
+        cacheSetStats(slug, cards);
+        return;
+      }
+      // fell through: 0 cards on final attempt — treat as failure
+      break;
+    } catch {
+      // retry
+    }
+  }
+  // All attempts failed or returned 0 cards
+  if (cells.length >= 7) {
+    cells[2].innerHTML = '<span class="sov-price-empty">err</span>';
+    cells[3].innerHTML = cells[4].innerHTML = cells[5].innerHTML = '<span class="sov-price-empty">—</span>';
+    cells[6].innerHTML = `<button class="btn-load-row" data-slug="${escA(slug)}" data-name="${escA(name)}">Retry</button>`;
+  }
+}
+
+let loadAllAbort = false;
+async function loadAllStats() {
+  const sets = S.games[S.game]?.sets || [];
+  if (!sets.length) return;
+  loadAllAbort = false;
+  E.btnLoadAllStats.disabled = true;
+  let done = 0;
+  for (const s of sets) {
+    if (loadAllAbort) break;
+    E.btnLoadAllStats.textContent = `Loading ${done + 1}/${sets.length}…`;
+    const row = E.setsOvTbody?.querySelector(`tr[data-slug="${CSS.escape(s.slug)}"]`);
+    if (row) await loadSetStatsRow(s.slug, s.name, row, true);
+    done++;
+    if (done < sets.length) await new Promise(r => setTimeout(r, 200));
+  }
+  E.btnLoadAllStats.disabled = false;
+  E.btnLoadAllStats.textContent = 'Load All Stats';
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────
 async function init() {
   applyAccent(S.game);
@@ -625,6 +865,18 @@ async function init() {
     E.setList.appendChild(msg);
   }
 }
+
+// ── Sets Overview events ──────────────────────────────────────────────────
+E.btnViewSets.addEventListener('click', enterSetsView);
+E.btnLoadAllStats.addEventListener('click', loadAllStats);
+
+// Delegate per-row Load buttons (added dynamically)
+E.setsOvTbody.addEventListener('click', (e) => {
+  const btn = e.target.closest('.btn-load-row');
+  if (!btn) return;
+  const row = btn.closest('tr');
+  if (row) loadSetStatsRow(btn.dataset.slug, btn.dataset.name, row);
+});
 
 // ── Cache click handlers ──────────────────────────────────────────────────
 E.cachePill.addEventListener('click', refreshCacheNow);
@@ -680,6 +932,30 @@ window.addEventListener('resize', () => {
   if (!isMobile() && E.sidebar.classList.contains('open')) {
     closeSidebar();
   }
+});
+
+// ── Image Modal ───────────────────────────────────────────────────────────
+function openImgModal(src, name) {
+  E.imgModalImg.src = src;
+  E.imgModalImg.alt = name;
+  E.imgModalName.textContent = name;
+  E.imgModal.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+function closeImgModal() {
+  E.imgModal.style.display = 'none';
+  E.imgModalImg.src = '';
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('click', e => {
+  const thumb = e.target.closest('.card-thumb');
+  if (thumb) { openImgModal(thumb.src, thumb.alt); return; }
+});
+E.imgModalClose.addEventListener('click', closeImgModal);
+E.imgModalBackdrop.addEventListener('click', closeImgModal);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && E.imgModal.style.display !== 'none') closeImgModal();
 });
 
 // ── Game Dropdown ─────────────────────────────────────────────────────────

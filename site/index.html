@@ -72,6 +72,12 @@
           <svg class="set-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           <input type="search" class="set-search" id="set-search" placeholder="Filter sets…" aria-label="Filter sets" />
         </div>
+        <div class="sidebar-actions">
+          <button class="btn-view-sets" id="btn-view-sets">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            Sets Overview
+          </button>
+        </div>
       </div>
       <div class="set-list" id="set-list" role="listbox" aria-label="Card sets">
         <div class="skeleton-wrap" id="set-skeleton">
@@ -154,6 +160,30 @@
           <p class="state-title">No cards match "<span id="no-results-q"></span>"</p>
         </div>
 
+        <!-- Sets Overview -->
+        <div class="sets-overview-wrap" id="state-sets-view" style="display:none">
+          <div class="sets-ov-header">
+            <span class="sets-ov-title" id="sets-ov-title">Sets</span>
+            <button class="btn-load-all-stats" id="btn-load-all-stats">Load All Stats</button>
+          </div>
+          <div class="table-wrap">
+            <table class="price-table sets-table" id="sets-ov-table" aria-label="Set overview">
+              <thead>
+                <tr>
+                  <th class="th-num">#</th>
+                  <th class="th-name">Set</th>
+                  <th class="th-price">Cards</th>
+                  <th class="th-price">Avg Ungraded</th>
+                  <th class="th-price">Top Ungraded</th>
+                  <th class="th-price">Top PSA 10</th>
+                  <th class="th-action"></th>
+                </tr>
+              </thead>
+              <tbody id="sets-ov-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- Table -->
         <div class="table-wrap" id="table-wrap" style="display:none">
           <table class="price-table" aria-label="Card prices">
@@ -180,6 +210,16 @@
 
     </main>
   </div><!-- /app-layout -->
+
+  <!-- Image modal -->
+  <div class="img-modal" id="img-modal" aria-modal="true" role="dialog" aria-label="Card image" style="display:none">
+    <div class="img-modal-backdrop" id="img-modal-backdrop"></div>
+    <div class="img-modal-content">
+      <button class="img-modal-close" id="img-modal-close" aria-label="Close">✕</button>
+      <img class="img-modal-img" id="img-modal-img" src="" alt="" />
+      <p class="img-modal-name" id="img-modal-name"></p>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

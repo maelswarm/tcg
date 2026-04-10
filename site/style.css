@@ -226,6 +226,24 @@ a:hover { text-decoration: underline; }
 .set-search::placeholder { color: var(--faint); }
 .set-search:focus { outline: none; border-color: var(--game-accent); background: var(--surf2); }
 
+/* ── Sidebar Actions ─────────────────────────────── */
+.sidebar-actions { padding: 0 var(--sp3) var(--sp2); }
+.btn-view-sets {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  width: 100%; padding: var(--sp2) var(--sp3);
+  font-size: var(--text-xs); font-weight: 500; color: var(--muted);
+  background: var(--surf3); border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  transition: background var(--ease), color var(--ease), border-color var(--ease);
+}
+.btn-view-sets:hover { background: var(--surfhov); color: var(--text); border-color: color-mix(in srgb, var(--game-accent) 40%, transparent); }
+.btn-view-sets.active {
+  background: var(--game-accent-dim); color: var(--text);
+  border-color: var(--game-accent);
+}
+.btn-view-sets svg { flex-shrink: 0; opacity: 0.7; }
+.btn-view-sets.active svg { opacity: 1; color: var(--game-accent); }
+
 .set-list {
   flex: 1; overflow-y: auto; padding: var(--sp1) 0 var(--sp4);
   scrollbar-width: thin; scrollbar-color: var(--border) transparent;
@@ -452,21 +470,21 @@ a:hover { text-decoration: underline; }
 
 .price-table td { padding: var(--sp2) var(--sp4); vertical-align: middle; }
 .th-num  { width: 40px; }
-.th-img  { width: 50px; }
+.th-img  { width: 88px; }
 .th-name { min-width: 180px; }
 .th-price { width: 100px; }
 
 .td-num { color: var(--faint); font-family: var(--font-mono); font-size: var(--text-xs); text-align: right; }
-.td-img  { padding: var(--sp1) var(--sp3); }
+.td-img  { padding: var(--sp1) var(--sp2); }
 .td-price { text-align: right; }
 
 .card-thumb {
-  width: 38px; height: 52px; object-fit: cover;
-  border-radius: 3px; background: var(--surf3);
+  width: 72px; height: 100px; object-fit: contain;
+  border-radius: 3px;
 }
 .card-thumb-ph {
-  width: 38px; height: 52px; border-radius: 3px;
-  background: var(--surf3); display: flex; align-items: center; justify-content: center;
+  width: 72px; height: 100px; border-radius: 3px;
+  display: flex; align-items: center; justify-content: center;
   color: var(--faint); font-size: 16px;
 }
 .card-link {
@@ -529,6 +547,56 @@ a:hover { text-decoration: underline; }
 .footer-count { font-size: var(--text-xs); font-family: var(--font-mono); color: var(--faint); }
 .footer-note  { font-size: var(--text-xs); color: var(--faint); }
 .footer-note a { color: var(--primary); }
+
+/* ── Sets Overview ───────────────────────────────── */
+.sets-overview-wrap {
+  display: flex; flex-direction: column;
+  min-height: 100%;
+}
+.sets-ov-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--sp3) var(--sp5);
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface); flex-shrink: 0;
+}
+.sets-ov-title {
+  font-size: var(--text-sm); font-weight: 600; color: var(--text);
+}
+.btn-load-all-stats {
+  padding: var(--sp1) var(--sp4);
+  font-size: var(--text-xs); font-weight: 500; color: var(--muted);
+  background: var(--surf3); border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  transition: background var(--ease), color var(--ease), border-color var(--ease);
+}
+.btn-load-all-stats:hover { background: var(--surfhov); color: var(--text); border-color: var(--game-accent); }
+.btn-load-all-stats:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.sets-table .th-action { width: 60px; }
+.sets-table .td-action { text-align: center; padding: var(--sp1) var(--sp2); }
+.btn-load-row {
+  padding: 2px 8px; font-size: 10px; font-weight: 500;
+  color: var(--muted); background: var(--surf3); border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  transition: background var(--ease), color var(--ease), border-color var(--ease);
+  white-space: nowrap;
+}
+.btn-load-row:hover { color: var(--text); border-color: var(--game-accent); background: var(--game-accent-dim); }
+
+.sov-row { cursor: pointer; }
+.sov-row:hover .sov-set-name { color: var(--primary); }
+.sov-set-name { font-weight: 500; transition: color var(--ease); }
+
+.sov-spinner {
+  display: inline-block; width: 10px; height: 10px;
+  border: 1.5px solid var(--border); border-top-color: var(--game-accent);
+  border-radius: 50%; animation: spin 0.65s linear infinite;
+  vertical-align: middle;
+}
+
+.sov-price { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text); }
+.sov-price-psa { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--success); }
+.sov-price-empty { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); }
 
 /* ── Animations ──────────────────────────────────── */
 @keyframes spin    { to { transform: rotate(360deg); } }
@@ -594,3 +662,34 @@ a:hover { text-decoration: underline; }
   .stat:nth-child(odd) { border-right: 1px solid var(--divider); }
   .stat:last-child, .stat:nth-last-child(2):nth-child(odd) { border-bottom: none; }
 }
+
+/* ── Image Modal ─────────────────────────────────────── */
+.img-modal {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+}
+.img-modal-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.82); backdrop-filter: blur(4px);
+}
+.img-modal-content {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; align-items: center; gap: var(--sp3);
+  max-width: min(480px, 90vw);
+}
+.img-modal-img {
+  width: 100%; max-height: 80vh; object-fit: contain;
+  border-radius: 8px; box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+}
+.img-modal-name {
+  font-size: var(--text-sm); color: var(--muted); text-align: center;
+  margin: 0;
+}
+.img-modal-close {
+  position: absolute; top: -36px; right: -4px;
+  background: none; border: none; color: var(--muted);
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 4px 8px;
+  transition: color var(--ease);
+}
+.img-modal-close:hover { color: var(--text); }
+.card-thumb { cursor: zoom-in; }
