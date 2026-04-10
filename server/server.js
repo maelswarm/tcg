@@ -5262,6 +5262,43 @@ function httpGet(targetUrl) {
   });
 }
 
+// Retry wrappers: 3 attempts, 1–1.5s random delay between, only give up after all fail
+async function httpGetRetry(targetUrl, label = '') {
+  let lastStatus = 0, lastHtml = '', lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const { html, status } = await httpGet(targetUrl);
+      if (status === 200) return { html, status };
+      lastStatus = status; lastHtml = html; lastErr = null;
+      console.warn(`[http-retry] ${label || targetUrl} — attempt ${attempt}/3 got HTTP ${status}`);
+    } catch (err) {
+      lastStatus = 0; lastHtml = ''; lastErr = err;
+      console.warn(`[http-retry] ${label || targetUrl} — attempt ${attempt}/3 threw: ${err.message}`);
+    }
+    if (attempt < 3) await new Promise(r => setTimeout(r, 1000 + Math.random() * 500));
+  }
+  if (lastErr) throw lastErr;
+  return { html: lastHtml, status: lastStatus };
+}
+
+async function httpPostRetry(targetUrl, postData, label = '') {
+  let lastStatus = 0, lastHtml = '', lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const { html, status } = await httpPost(targetUrl, postData);
+      if (status === 200) return { html, status };
+      lastStatus = status; lastHtml = html; lastErr = null;
+      console.warn(`[http-retry] ${label || targetUrl} — attempt ${attempt}/3 got HTTP ${status}`);
+    } catch (err) {
+      lastStatus = 0; lastHtml = ''; lastErr = err;
+      console.warn(`[http-retry] ${label || targetUrl} — attempt ${attempt}/3 threw: ${err.message}`);
+    }
+    if (attempt < 3) await new Promise(r => setTimeout(r, 1000 + Math.random() * 500));
+  }
+  if (lastErr) throw lastErr;
+  return { html: lastHtml, status: lastStatus };
+}
+
 function httpPost(targetUrl, postData) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(targetUrl);
@@ -5360,13 +5397,15 @@ function getGameSets(gameKey) {
 }
 
 // ── Sealed product detection ─────────────────────────────────────────────
-const SEALED_RE = /\b(booster\s+box|booster\s+case|booster\s+display|booster\s+pack|booster\s+bundle|blister|starter\s+(set|deck|kit)|theme\s+deck|prerelease|pre-release|display\s+box|collector('s)?\s+(box|pack|bundle|edition)|elite\s+trainer\s+box|etb|tin|binder|gift\s+box|two-player\s+starter|2-player\s+starter|draft\s+(set|booster)|build\s+(&|and)\s+battle|booster\s+draft|fat\s+pack|bundle\s+box|v\s+box|vmax\s+box|ex\s+box|gx\s+box|mega\s+box|premium\s+collection|special\s+collection|super\s+premium|premium\s+figure|treasure\s+chest|advent\s+calendar|tin\s+box|special\s+edition\s+box|double\s+pack|booster\s+set|sealed\s+case|case\s+break|6-box|12-box|display\s+case|play\s+mat|sealed\s+product|promo\s+pack|starter\s+box|starter\s+bundle|league\s+battle\s+deck|league\s+starter|commander\s+deck|draft\s+pack|deck)\b/i;
+const SEALED_RE = /\b(booster\s+box|booster\s+case|booster\s+display|booster\s+pack|booster\s+bundle|blister|starter\s+(set|deck|kit)|theme\s+deck|prerelease|pre-release|display\s+box|collector('s)?\s+(box|pack|bundle|edition)|elite\s+trainer\s+box|etb|binder|gift\s+box|two-player\s+starter|2-player\s+starter|draft\s+(set|booster)|build\s+(&|and)\s+battle|booster\s+draft|fat\s+pack|bundle\s+box|v\s+box|vmax\s+box|ex\s+box|gx\s+box|mega\s+box|premium\s+collection|special\s+collection|super\s+premium|premium\s+figure|treasure\s+chest|advent\s+calendar|special\s+edition\s+box|double\s+pack|booster\s+set|sealed\s+case|case\s+break|6-box|12-box|display\s+case|play\s+mat|sealed\s+product|promo\s+pack|starter\s+box|starter\s+bundle|league\s+battle\s+deck|league\s+starter|commander\s+deck|draft\s+pack|deck)\b/i;
 
 function isSealed(name) {
+  // A '#123' style card number anywhere in the name means it's an individual card
+  if (/#\d+/.test(name)) return false;
   // Also catch standalone 'Booster Box', 'Booster Case' etc. without word-boundary issues
   if (SEALED_RE.test(name)) return true;
   // Catch names that ARE the sealed product (no card number like #123 at end)
-  if (/^(Booster|Starter|Blister|Theme|Prerelease|Display|Draft|Bundle|Collection|Tin|Gift|Deck)\b/i.test(name) && !/\s*#\d+$/.test(name)) return true;
+  if (/^(Booster|Starter|Blister|Theme|Prerelease|Display|Draft|Bundle|Collection|Gift|Deck)\b/i.test(name)) return true;
   return false;
 }
 
@@ -5432,7 +5471,7 @@ async function fetchSetPages(slug) {
 
   const baseUrl = `https://www.pricecharting.com/console/${encodeURIComponent(slug)}`;
   const allCards = [];
-  const { html: html1, status: s1 } = await httpGet(baseUrl);
+  const { html: html1, status: s1 } = await httpGetRetry(baseUrl, `${slug} p1`);
   if (s1 !== 200) {
     console.error(`[card-fetch] FAIL ${slug} — page 1 HTTP ${s1} — url: ${baseUrl} — body snippet: ${html1.slice(0, 200)}`);
   }
@@ -5444,15 +5483,15 @@ async function fetchSetPages(slug) {
 
   let nextData = parseNextCursor(html1);
   let page = 2;
-  const MAX_PAGES = 30; // safety cap (~1,500 items max per set)
+  const MAX_PAGES = 60; // safety cap (~3,000 items max per set)
   while (nextData && page <= MAX_PAGES) {
     try {
-      const { html: pageHtml, status: sp } = await httpPost(baseUrl, {
+      const { html: pageHtml, status: sp } = await httpPostRetry(baseUrl, {
         sort: nextData.sort || '',
         when: nextData.when || 'none',
         'release-date': nextData['release-date'] || '',
         cursor: nextData.cursor,
-      });
+      }, `${slug} p${page}`);
       if (sp !== 200) {
         console.error(`[card-fetch] FAIL ${slug} — page ${page} HTTP ${sp} — url: ${baseUrl} — body snippet: ${pageHtml.slice(0, 200)}`);
         break;

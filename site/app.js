@@ -311,68 +311,55 @@ async function loadSet(slug, name, btn) {
   E.loadingLabel.textContent = `Loading ${name}…`;
   showState('loading');
 
-  const MAX_ATTEMPTS = 3;
-  const RETRY_DELAYS = [500, 1500];
-  let lastErr;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  // Server handles retries (3 attempts with 1–1.5s backoff), so one call here is enough.
+  try {
+    const data = await fetchSet(slug);
     if (lid !== S.loadId) return;
-    if (attempt > 1) {
-      E.loadingLabel.textContent = `Loading ${name}… (retry ${attempt - 1}/${MAX_ATTEMPTS - 1})`;
-      await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 2]));
-      if (lid !== S.loadId) return;
+
+    S.allCards = data.cards || [];
+    if (btn) btn.classList.remove('loading');
+
+    // Clean up title
+    const cleanTitle = (data.title || name)
+      .replace(/^Prices for\s+/i, '')
+      .replace(/\s+(?:Pokemon|Magic|YuGiOh|Star Wars|One Piece|Digimon|Dragon Ball|Lorcana|Gundam|Riftbound)\s+Cards.*$/i, '')
+      .trim();
+    E.setTitle.textContent = cleanTitle || name;
+
+    if (data.source) {
+      E.setExtLink.href = data.source;
+      E.setExtLink.style.display = 'inline';
     }
-    try {
-      const data = await fetchSet(slug);
-      if (lid !== S.loadId) return;
 
-      S.allCards = data.cards || [];
-      if (btn) btn.classList.remove('loading');
-
-      // Clean up title
-      const cleanTitle = (data.title || name)
-        .replace(/^Prices for\s+/i, '')
-        .replace(/\s+(?:Pokemon|Magic|YuGiOh|Star Wars|One Piece|Digimon|Dragon Ball|Lorcana|Gundam|Riftbound)\s+Cards.*$/i, '')
-        .trim();
-      E.setTitle.textContent = cleanTitle || name;
-
-      if (data.source) {
-        E.setExtLink.href = data.source;
-        E.setExtLink.style.display = 'inline';
-      }
-
-      // Cache age indicator
-      if (data.fromCache && data.cachedAt) {
-        const ageSec = Math.round((Date.now() - data.cachedAt) / 1000);
-        E.statCache.style.display = 'flex';
-        E.statCacheAge.textContent = fmtAge(ageSec);
-        S.cacheAgeSeconds = ageSec;
-      } else {
-        E.statCache.style.display = 'none';
-        S.cacheAgeSeconds = 0;
-      }
-      const mins = Math.round(S.cacheAgeSeconds / 60);
-      E.cachePill.textContent = `Sets: ${S.cacheSets} · ${mins}m old`;
-      E.cachePill.className = `cache-pill${S.cacheAgeSeconds < 120 ? ' fresh' : ''}`;
-
-      S.query = '';
-      E.cardSearch.value = '';
-      S.sort = 'default';
-      E.sortSelect.value = 'default';
-      document.querySelectorAll('.price-table th.sortable').forEach(t => t.classList.remove('sort-active'));
-
-      cacheSetStats(slug, S.allCards);
-      renderCards();
-      updateStats();
-      return;
-    } catch (err) {
-      if (lid !== S.loadId) return;
-      lastErr = err;
+    // Cache age indicator
+    if (data.fromCache && data.cachedAt) {
+      const ageSec = Math.round((Date.now() - data.cachedAt) / 1000);
+      E.statCache.style.display = 'flex';
+      E.statCacheAge.textContent = fmtAge(ageSec);
+      S.cacheAgeSeconds = ageSec;
+    } else {
+      E.statCache.style.display = 'none';
+      S.cacheAgeSeconds = 0;
     }
+    const mins = Math.round(S.cacheAgeSeconds / 60);
+    E.cachePill.textContent = `Sets: ${S.cacheSets} · ${mins}m old`;
+    E.cachePill.className = `cache-pill${S.cacheAgeSeconds < 120 ? ' fresh' : ''}`;
+
+    S.query = '';
+    E.cardSearch.value = '';
+    S.sort = 'default';
+    E.sortSelect.value = 'default';
+    document.querySelectorAll('.price-table th.sortable').forEach(t => t.classList.remove('sort-active'));
+
+    cacheSetStats(slug, S.allCards);
+    renderCards();
+    updateStats();
+  } catch (err) {
+    if (lid !== S.loadId) return;
+    if (btn) btn.classList.remove('loading', 'active');
+    E.errorMsg.textContent = err?.message || 'Failed to load. Try again.';
+    showState('error');
   }
-  // All attempts exhausted
-  if (btn) btn.classList.remove('loading', 'active');
-  E.errorMsg.textContent = lastErr?.message || 'Failed to load. Try again.';
-  showState('error');
 }
 
 // ── Stats ──────────────────────────────────────────────────────────────────
@@ -380,7 +367,7 @@ function updateStats() {
   if (!S.allCards.length) { E.statsBar.style.display = 'none'; return; }
   E.statsBar.style.display = 'flex';
   const regularCards = S.allCards.filter(c => !c.sealed);
-  E.statCount.textContent  = S.allCards.length;
+  E.statCount.textContent  = regularCards.length;
   E.statAvg.textContent    = fmt(avg(regularCards.map(c => c.ungraded)));
   E.statMax.textContent    = fmt(maxVal(regularCards.map(c => c.ungraded)));
   E.statPsa10.textContent  = fmt(maxVal(regularCards.map(c => c.psa10)));
@@ -658,13 +645,56 @@ async function refreshCacheNow() {
   }
 }
 
+// ── LocalStorage: Set stats cache ─────────────────────────────────────────
+const LS_STATS_KEY = 'tcg-set-stats-v1';
+const LS_STATS_TTL_MS = 60 * 60 * 1000; // 1 hour (matches server cache)
+
+function loadStatsFromStorage() {
+  try {
+    const raw = localStorage.getItem(LS_STATS_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.entries) return;
+    const now = Date.now();
+    let loaded = 0, expired = 0;
+    for (const [slug, rec] of Object.entries(parsed.entries)) {
+      if (!rec || typeof rec !== 'object') continue;
+      if (now - (rec.cachedAt || 0) > LS_STATS_TTL_MS) { expired++; continue; }
+      const { cachedAt, ...stats } = rec;
+      S.setStats.set(slug, stats);
+      loaded++;
+    }
+    if (expired > 0) saveStatsToStorage(); // rewrite without expired entries
+    if (loaded > 0) console.log(`[ls-stats] loaded ${loaded} cached set stats${expired ? ` (${expired} expired)` : ''}`);
+  } catch (e) {
+    console.warn('[ls-stats] load failed', e);
+  }
+}
+
+let saveStatsTimer = null;
+function saveStatsToStorage() {
+  clearTimeout(saveStatsTimer);
+  saveStatsTimer = setTimeout(() => {
+    try {
+      const entries = {};
+      const now = Date.now();
+      for (const [slug, stats] of S.setStats.entries()) {
+        entries[slug] = { ...stats, cachedAt: stats.cachedAt || now };
+      }
+      localStorage.setItem(LS_STATS_KEY, JSON.stringify({ v: 1, entries }));
+    } catch (e) {
+      console.warn('[ls-stats] save failed', e);
+    }
+  }, 300);
+}
+
 // ── Sets Overview ─────────────────────────────────────────────────────────
 function calcStats(cards) {
   const regular = cards.filter(c => !c.sealed);
   const ungraded = regular.map(c => parsePrice(c.ungraded)).filter(n => n != null);
   const psa10    = regular.map(c => parsePrice(c.psa10)).filter(n => n != null);
   return {
-    count:       cards.length,
+    count:       regular.length,
     avgUngraded: ungraded.length ? ungraded.reduce((a,b) => a+b, 0) / ungraded.length : null,
     topUngraded: ungraded.length ? Math.max(...ungraded) : null,
     topPsa10:    psa10.length    ? Math.max(...psa10)    : null,
@@ -673,7 +703,9 @@ function calcStats(cards) {
 
 function cacheSetStats(slug, cards) {
   const stats = calcStats(cards);
+  stats.cachedAt = Date.now();
   S.setStats.set(slug, stats);
+  saveStatsToStorage();
   // Update row in sets overview if it's currently visible
   const row = E.setsOvTbody?.querySelector(`tr[data-slug="${CSS.escape(slug)}"]`);
   if (row) updateSovRow(row, stats);
@@ -782,25 +814,23 @@ async function loadSetStatsRow(slug, name, row, force = false) {
     cells[5].innerHTML = '<span class="sov-spinner"></span>';
     cells[6].innerHTML = '';
   }
-  const MAX_ATTEMPTS = 3;
-  const RETRY_DELAYS = [500, 1500];
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    if (attempt > 1) await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 2]));
-    try {
-      const data = await fetchSet(slug, force);
-      const cards = data.cards || [];
-      if (cards.length === 0 && attempt < MAX_ATTEMPTS) { force = false; continue; }
-      if (cards.length > 0) {
-        cacheSetStats(slug, cards);
-        return;
-      }
-      // fell through: 0 cards on final attempt — treat as failure
-      break;
-    } catch {
-      // retry
+  // Server handles HTTP retries. We only retry here once if we get 0 cards
+  // back while forcing a refresh — a fallback to the cached copy.
+  try {
+    let data = await fetchSet(slug, force);
+    let cards = data.cards || [];
+    if (cards.length === 0 && force) {
+      data = await fetchSet(slug, false);
+      cards = data.cards || [];
     }
+    if (cards.length > 0) {
+      cacheSetStats(slug, cards);
+      return;
+    }
+  } catch {
+    // fall through to error state
   }
-  // All attempts failed or returned 0 cards
+  // Failed or returned 0 cards
   if (cells.length >= 7) {
     cells[2].innerHTML = '<span class="sov-price-empty">err</span>';
     cells[3].innerHTML = cells[4].innerHTML = cells[5].innerHTML = '<span class="sov-price-empty">—</span>';
@@ -830,6 +860,7 @@ async function loadAllStats() {
 // ── Init ──────────────────────────────────────────────────────────────────
 async function init() {
   applyAccent(S.game);
+  loadStatsFromStorage();
 
   if (!API) {
     E.setSkeleton.style.display = 'none';
