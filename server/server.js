@@ -50,7 +50,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Scarlet & Violet 151",
-        "slug": "pokemon-scarlet-&amp;-violet-151"
+        "slug": "pokemon-scarlet-&-violet-151"
       },
       {
         "name": "Pokemon Journey Together",
@@ -182,7 +182,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Black & White",
-        "slug": "pokemon-black-&amp;-white"
+        "slug": "pokemon-black-&-white"
       },
       {
         "name": "Pokemon Boundaries Crossed",
@@ -298,7 +298,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Diamond & Pearl",
-        "slug": "pokemon-diamond-&amp;-pearl"
+        "slug": "pokemon-diamond-&-pearl"
       },
       {
         "name": "Pokemon Double Crisis",
@@ -326,7 +326,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon EX Latias & Latios",
-        "slug": "pokemon-ex-latias-&amp;-latios"
+        "slug": "pokemon-ex-latias-&-latios"
       },
       {
         "name": "Pokemon Emerald",
@@ -346,7 +346,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Fire Red & Leaf Green",
-        "slug": "pokemon-fire-red-&amp;-leaf-green"
+        "slug": "pokemon-fire-red-&-leaf-green"
       },
       {
         "name": "Pokemon Flashfire",
@@ -394,7 +394,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon HeartGold & SoulSilver",
-        "slug": "pokemon-heartgold-&amp;-soulsilver"
+        "slug": "pokemon-heartgold-&-soulsilver"
       },
       {
         "name": "Pokemon Hidden Fates",
@@ -750,7 +750,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Japanese Scarlet & Violet 151",
-        "slug": "pokemon-japanese-scarlet-&amp;-violet-151"
+        "slug": "pokemon-japanese-scarlet-&-violet-151"
       },
       {
         "name": "Pokemon Japanese Scarlet Ex",
@@ -910,7 +910,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Korean Scarlet & Violet 151",
-        "slug": "pokemon-korean-scarlet-&amp;-violet-151"
+        "slug": "pokemon-korean-scarlet-&-violet-151"
       },
       {
         "name": "Pokemon Korean Terastal Festival ex",
@@ -1042,7 +1042,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Pikachu Libre & Suicune",
-        "slug": "pokemon-pikachu-libre-&amp;-suicune"
+        "slug": "pokemon-pikachu-libre-&-suicune"
       },
       {
         "name": "Pokemon Plasma Blast",
@@ -1082,7 +1082,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Ruby & Sapphire",
-        "slug": "pokemon-ruby-&amp;-sapphire"
+        "slug": "pokemon-ruby-&-sapphire"
       },
       {
         "name": "Pokemon Rumble",
@@ -1094,11 +1094,11 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Scarlet & Violet",
-        "slug": "pokemon-scarlet-&amp;-violet"
+        "slug": "pokemon-scarlet-&-violet"
       },
       {
         "name": "Pokemon Scarlet & Violet Energy",
-        "slug": "pokemon-scarlet-&amp;-violet-energy"
+        "slug": "pokemon-scarlet-&-violet-energy"
       },
       {
         "name": "Pokemon Secret Wonders",
@@ -1142,7 +1142,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Sun & Moon",
-        "slug": "pokemon-sun-&amp;-moon"
+        "slug": "pokemon-sun-&-moon"
       },
       {
         "name": "Pokemon Supreme Victors",
@@ -1150,7 +1150,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Sword & Shield",
-        "slug": "pokemon-sword-&amp;-shield"
+        "slug": "pokemon-sword-&-shield"
       },
       {
         "name": "Pokemon TCG Classic: Blastoise Deck",
@@ -1166,7 +1166,7 @@ const GAME_DATA = {
       },
       {
         "name": "Pokemon Team Magma & Team Aqua",
-        "slug": "pokemon-team-magma-&amp;-team-aqua"
+        "slug": "pokemon-team-magma-&-team-aqua"
       },
       {
         "name": "Pokemon Team Rocket Returns",
@@ -2720,7 +2720,7 @@ const GAME_DATA = {
       },
       {
         "name": "YuGiOh Chronicles Deck: The Fallen & The Virtuous",
-        "slug": "yugioh-chronicles-deck-the-fallen-&amp;-the-virtuous"
+        "slug": "yugioh-chronicles-deck-the-fallen-&-the-virtuous"
       },
       {
         "name": "YuGiOh Circuit Break",
@@ -3871,7 +3871,7 @@ const GAME_DATA = {
       },
       {
         "name": "One Piece Japanese Starter Deck 22: Ace & Newgate",
-        "slug": "one-piece-japanese-starter-deck-22-ace-&amp;-newgate"
+        "slug": "one-piece-japanese-starter-deck-22-ace-&-newgate"
       },
       {
         "name": "One Piece Japanese Starter Deck 23: Red Shanks",
@@ -4023,7 +4023,7 @@ const GAME_DATA = {
       },
       {
         "name": "One Piece Starter Deck 22: Ace & Newgate",
-        "slug": "one-piece-starter-deck-22-ace-&amp;-newgate"
+        "slug": "one-piece-starter-deck-22-ace-&-newgate"
       },
       {
         "name": "One Piece Starter Deck 23: Red Shanks",
@@ -5195,7 +5195,7 @@ let setCacheTimers = {};
 
 function htmlDecode(str) {
   return str
-    .replace(/&amp;/g, '&')
+    .replace(/&/g, '&')
     .replace(/&#39;/g, "'")
     .replace(/&quot;/g, '"')
     .replace(/&lt;/g, '<')

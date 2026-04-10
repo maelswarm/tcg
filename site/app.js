@@ -829,7 +829,13 @@ async function loadSetStatsRow(slug, name, row, force = false) {
       cards = data.cards || [];
     }
     if (cards.length > 0) {
-      cacheSetStats(slug, cards);
+      // Inline the cache + row update — avoids a querySelector that can fail
+      // with slugs containing special chars (e.g. &).
+      const stats = calcStats(cards);
+      stats.cachedAt = Date.now();
+      S.setStats.set(slug, stats);
+      saveStatsToStorage();
+      updateSovRow(row, stats);
       return;
     }
   } catch {
@@ -906,10 +912,11 @@ async function init() {
 E.btnViewSets.addEventListener('click', enterSetsView);
 E.btnLoadAllStats.addEventListener('click', loadAllStats);
 
-// Delegate per-row Load buttons (added dynamically)
+// Delegate per-row Load/Retry buttons (added dynamically)
 E.setsOvTbody.addEventListener('click', (e) => {
   const btn = e.target.closest('.btn-load-row');
   if (!btn) return;
+  e.stopPropagation(); // prevent row click from also firing loadSet()
   const row = btn.closest('tr');
   if (row) loadSetStatsRow(btn.dataset.slug, btn.dataset.name, row);
 });
