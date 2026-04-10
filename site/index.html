@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TCG Price Index — PriceCharting</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="header-inner">
+      <button class="hamburger" id="sidebar-toggle" aria-label="Open set list" aria-expanded="false" aria-controls="sidebar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M3 6h18M3 12h18M3 18h18"/>
+        </svg>
+      </button>
+      <a href="/" class="logo" aria-label="TCG Price Index">
+        <svg width="30" height="30" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="2" y="6" width="18" height="24" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <rect x="8" y="2" width="18" height="24" rx="2" fill="var(--color-bg)" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M13 10h8M13 14h6M13 18h4" stroke="var(--game-accent)" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <span class="logo-text">TCG <span class="logo-accent">Price</span> Index</span>
+      </a>
+      <div class="header-right">
+        <span class="source-badge">Live data via <a href="https://www.pricecharting.com" target="_blank" rel="noopener">PriceCharting</a></span>
+        <div class="cache-pill" id="cache-pill" title="Set list cache status"></div>
+        <button class="theme-toggle" data-theme-toggle aria-label="Switch to light mode">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Game Selector (horizontal scrollable pill row) -->
+  <div class="game-bar">
+    <div class="game-bar-inner">
+      <div class="game-tabs" id="game-tabs" role="tablist" aria-label="Select card game">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- App Layout -->
+  <div class="app-layout">
+
+    <!-- Sidebar overlay (mobile) -->
+    <div class="sidebar-overlay" id="sidebar-overlay" aria-hidden="true"></div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar" aria-label="Set list">
+      <div class="game-dropdown" id="game-dropdown">
+        <button class="game-dropdown-toggle" id="game-dropdown-toggle" aria-label="Select card game" aria-expanded="false" aria-haspopup="listbox">
+          <span class="game-dropdown-label" id="game-dropdown-label">Star Wars</span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div id="game-dropdown-menu" class="game-dropdown-menu" role="listbox" aria-label="Select card game" style="display:none">
+          <div id="game-tabs-sidebar" role="presentation"></div>
+        </div>
+      </div>
+      <div class="sidebar-top">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Sets</span>
+          <span class="set-badge" id="set-badge">—</span>
+        </div>
+        <div class="set-search-wrap">
+          <svg class="set-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input type="search" class="set-search" id="set-search" placeholder="Filter sets…" aria-label="Filter sets" />
+        </div>
+      </div>
+      <div class="set-list" id="set-list" role="listbox" aria-label="Card sets">
+        <div class="skeleton-wrap" id="set-skeleton">
+          <div class="set-skel"></div><div class="set-skel w80"></div>
+          <div class="set-skel w90"></div><div class="set-skel w70"></div>
+          <div class="set-skel w85"></div><div class="set-skel"></div>
+          <div class="set-skel w75"></div><div class="set-skel w95"></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main-panel" id="main-panel">
+
+      <!-- Toolbar -->
+      <div class="toolbar" id="toolbar">
+        <div class="toolbar-left">
+          <h1 class="set-title" id="set-title">Select a set</h1>
+          <a class="set-ext-link" id="set-ext-link" href="#" target="_blank" rel="noopener" style="display:none">
+            View on PriceCharting ↗
+          </a>
+        </div>
+        <div class="toolbar-right">
+          <div class="search-wrap">
+            <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <input type="search" class="card-search" id="card-search" placeholder="Search cards…" aria-label="Search cards" />
+          </div>
+          <select class="sort-select" id="sort-select" aria-label="Sort cards">
+            <option value="default">Sort: Default</option>
+            <option value="price-desc">Ungraded: High → Low</option>
+            <option value="price-asc">Ungraded: Low → High</option>
+            <option value="psa10-desc">PSA 10: High → Low</option>
+            <option value="grade9-desc">Grade 9: High → Low</option>
+            <option value="name-asc">Name: A → Z</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Stats Bar -->
+      <div class="stats-bar" id="stats-bar" style="display:none">
+        <div class="stat"><span class="stat-label">Cards</span><span class="stat-val" id="stat-count">—</span></div>
+        <div class="stat"><span class="stat-label">Avg Ungraded</span><span class="stat-val" id="stat-avg">—</span></div>
+        <div class="stat"><span class="stat-label">Top Ungraded</span><span class="stat-val" id="stat-max">—</span></div>
+        <div class="stat"><span class="stat-label">Top PSA 10</span><span class="stat-val" id="stat-psa10">—</span></div>
+        <div class="stat cache-stat" id="stat-cache" style="display:none">
+          <span class="stat-label">Cached</span><span class="stat-val" id="stat-cache-age">—</span>
+        </div>
+      </div>
+
+      <!-- Content area -->
+      <div class="content-area" id="content-area">
+
+        <!-- Welcome -->
+        <div class="state-panel" id="state-welcome">
+          <svg width="56" height="56" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <rect x="8" y="16" width="32" height="40" rx="4" fill="none" stroke="var(--color-border)" stroke-width="2"/>
+            <rect x="16" y="8" width="32" height="40" rx="4" fill="var(--color-surface)" stroke="var(--color-border)" stroke-width="2"/>
+            <path d="M24 22h16M24 30h12M24 38h8" stroke="var(--game-accent)" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <p class="state-title">Pick a set from the sidebar</p>
+          <p class="state-sub">Live prices from PriceCharting — <span id="total-sets-count">1,274</span> sets across 10 games</p>
+        </div>
+
+        <!-- Loading -->
+        <div class="state-panel" id="state-loading" style="display:none">
+          <div class="spinner"></div>
+          <p class="state-title" id="loading-label">Loading…</p>
+          <p class="state-sub">Fetching up to 5 pages of cards</p>
+        </div>
+
+        <!-- Error -->
+        <div class="state-panel" id="state-error" style="display:none">
+          <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--color-error)" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+          <p class="state-title" id="error-msg">Failed to load set.</p>
+          <button class="btn-retry" id="btn-retry">Retry</button>
+        </div>
+
+        <!-- No results -->
+        <div class="state-panel" id="state-no-results" style="display:none">
+          <p class="state-title">No cards match "<span id="no-results-q"></span>"</p>
+        </div>
+
+        <!-- Table -->
+        <div class="table-wrap" id="table-wrap" style="display:none">
+          <table class="price-table" aria-label="Card prices">
+            <thead>
+              <tr>
+                <th class="th-num" scope="col">#</th>
+                <th class="th-img" scope="col"><span class="sr-only">Image</span></th>
+                <th class="th-name" scope="col">Card</th>
+                <th class="th-price sortable" scope="col" data-col="ungraded">Ungraded <span class="sort-caret">↕</span></th>
+                <th class="th-price th-grade9 sortable" scope="col" data-col="grade9">Grade 9 <span class="sort-caret">↕</span></th>
+                <th class="th-price sortable" scope="col" data-col="psa10">PSA 10 <span class="sort-caret">↕</span></th>
+              </tr>
+            </thead>
+            <tbody id="price-tbody"></tbody>
+          </table>
+        </div>
+
+      </div><!-- /content-area -->
+
+      <div class="footer-bar" id="footer-bar" style="display:none">
+        <span class="footer-count" id="footer-count"></span>
+        <span class="footer-note">Data from <a href="https://www.pricecharting.com" target="_blank" rel="noopener">PriceCharting</a> · Refreshes hourly</span>
+      </div>
+
+    </main>
+  </div><!-- /app-layout -->
+
+  <script src="app.js"></script>
+</body>
+</html>
