@@ -5195,7 +5195,7 @@ let setCacheTimers = {};
 
 function htmlDecode(str) {
   return str
-    .replace(/&/g, '&')
+    .replace(/&amp;/g, '&')
     .replace(/&#39;/g, "'")
     .replace(/&quot;/g, '"')
     .replace(/&lt;/g, '<')
@@ -5339,7 +5339,7 @@ async function scrapeSetsFromCategory(gameKey) {
     const seen = new Map();
     let m;
     while ((m = linkRegex.exec(html)) !== null) {
-      let slug = m[1].replace(/%27/g,"'").replace(/%26/g,'&').replace(/%3A/g,':').replace(/%2F/g,'/');
+      let slug = htmlDecode(m[1]).replace(/%27/g,"'").replace(/%26/g,'&').replace(/%3A/g,':').replace(/%2F/g,'/');
       slug = decodeURIComponent(slug.replace(/%(?![0-9a-fA-F]{2})/g, '%25'));
       if (CONSOLE_NOISE.has(slug)) continue;
       if (prefix && !slug.startsWith(prefix)) continue;
