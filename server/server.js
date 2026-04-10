@@ -5469,13 +5469,14 @@ async function fetchSetPages(slug) {
     return { ...cached.data, fromCache: true, cachedAt: cached.fetchedAt };
   }
 
-  const baseUrl = `https://www.pricecharting.com/console/${encodeURIComponent(slug)}`;
+  const baseUrl = `https://www.pricecharting.com/console/${slug}`;
   const allCards = [];
   const { html: html1, status: s1 } = await httpGetRetry(baseUrl, `${slug} p1`);
   if (s1 !== 200) {
     console.error(`[card-fetch] FAIL ${slug} — page 1 HTTP ${s1} — url: ${baseUrl} — body snippet: ${html1.slice(0, 200)}`);
+    if (s1 === 404 || s1 === 403) return { error: 'Set not found', cards: [], count: 0 };
+    return { error: `HTTP ${s1}`, cards: [], count: 0 };
   }
-  if (s1 === 404) return { error: 'Set not found', cards: [], count: 0 };
 
   const titleMatch = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html1);
   const title = titleMatch ? htmlDecode(titleMatch[1].replace(/<[^>]+>/g, '').trim()) : slug;
