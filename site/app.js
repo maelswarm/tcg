@@ -293,7 +293,12 @@ async function loadSet(slug, name, btn) {
   if (S.setsView) exitSetsView(false);
   // Close mobile sidebar when user selects a set
   if (isMobile()) closeSidebar();
-  if (S.slug === slug && S.allCards.length > 0) return; // already loaded
+  if (S.slug === slug && S.allCards.length > 0) {
+    // Set already loaded — just make sure the table is visible (e.g. navigating from sets view)
+    renderCards();
+    updateStats();
+    return;
+  }
   S.slug = slug;
   const lid = ++S.loadId;
 
@@ -792,7 +797,7 @@ function renderSetsOverview() {
         <td class="td-action">${stats ? '' : `<button class="btn-load-row" data-slug="${escA(s.slug)}" data-name="${escA(s.name)}">Load</button>`}</td>`;
       // Click row to navigate to set
       tr.addEventListener('click', (e) => {
-        if (e.target.classList.contains('btn-load-row')) return;
+        if (e.target.closest('.btn-load-row')) return;
         const btn = document.querySelector(`.set-item[data-slug="${CSS.escape(s.slug)}"]`);
         loadSet(s.slug, s.name, btn);
       });
