@@ -45,6 +45,13 @@ const S = {
   cacheSets: 0,
   setsView: false,
   setStats: new Map(), // slug → { count, avgUngraded, topUngraded, topPsa10 }
+  cardCache: new Map(), // `${game}|${slug}|${cardId}` → card object
+  wallet: { connected: false, address: null },
+  collections: [],          // Array of { id, name, items: Map<string, number> }
+  activeCollectionId: null,
+  inventory: new Map(),     // always points to active collection's items Map
+  inventorySynced: new Set(), // items synced to contract
+  filterOwned: false,
 };
 
 // ── DOM ───────────────────────────────────────────────────────────────────
@@ -90,6 +97,8 @@ const E = {
   setsOvTitle:   g('sets-ov-title'),
   btnLoadAllStats: g('btn-load-all-stats'),
   setsOvTbody:   g('sets-ov-tbody'),
+  stateOwnedView: g('state-owned-view'),
+  ownedProductsTbody: g('owned-products-tbody'),
   sidebarToggle: g('sidebar-toggle'),
   sidebarOverlay:g('sidebar-overlay'),
   sidebar:       g('sidebar'),
@@ -98,6 +107,24 @@ const E = {
   gameDropdownToggle: g('game-dropdown-toggle'),
   gameDropdownMenu: g('game-dropdown-menu'),
   gameDropdownLabel: g('game-dropdown-label'),
+  walletWrap: g('wallet-wrap'),
+  filterOwnedBtn: g('btn-filter-owned'),
+  btnSyncInv: g('btn-sync-inv'),
+  invPopover: g('inv-popover'),
+  invCardName: g('inv-card-name'),
+  invQtyRows: g('inv-qty-rows'),
+  invGrading: g('inv-grading-select'),
+  invQtyInput: g('inv-qty-input'),
+  btnInvAdd: g('btn-inv-add'),
+  btnInvRemove: g('btn-inv-remove'),
+  btnInvSet: g('btn-inv-set'),
+  invStatus: g('inv-status'),
+  invClose: g('inv-popover-close'),
+  collectionControls: g('collection-controls'),
+  collectionSelect: g('collection-select'),
+  btnCollectionAdd: g('btn-collection-add'),
+  btnCollectionDelete: g('btn-collection-delete'),
+  collectionNameInput: g('collection-name-input'),
 };
 
 // ── Theme toggle ─────────────────────────────────────────────────────────
@@ -118,6 +145,7 @@ const E = {
     theme = theme === 'dark' ? 'light' : 'dark';
     root.setAttribute('data-theme', theme);
     setIcon(theme);
+    if (window.__appkit) window.__appkit.setThemeMode(theme);
   });
 })();
 
@@ -144,11 +172,70 @@ function esc(s) {
 function escA(s) {
   return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+function invKey(game, slug, cardId, grading) {
+  return `${game}|${slug}|${cardId}|${grading}`;
+}
+function invTotalForCard(cardId) {
+  return [0, 9, 10].reduce((sum, g) => sum + (S.inventory.get(invKey(S.game, S.slug, cardId, g)) || 0), 0);
+}
 function fmtAge(sec) {
   if (sec == null) return 'unknown';
   if (sec < 60) return `${sec}s ago`;
   if (sec < 3600) return `${Math.round(sec/60)}m ago`;
   return `${Math.round(sec/3600)}h ago`;
+}
+
+function makeCollId() { return 'col_' + Date.now() + '_' + Math.random().toString(36).slice(2,6); }
+
+function getActiveCollection() {
+  return S.collections.find(c => c.id === S.activeCollectionId) || S.collections[0];
+}
+
+function ensureDefaultCollection() {
+  if (S.collections.length > 0) return;
+  const col = { id: makeCollId(), name: 'New Collection', items: new Map() };
+  S.collections.push(col);
+  S.activeCollectionId = col.id;
+  S.inventory = col.items;
+  saveCollectionsToStorage();
+}
+
+function switchCollection(id) {
+  const col = S.collections.find(c => c.id === id);
+  if (!col) return;
+  S.activeCollectionId = col.id;
+  S.inventory = col.items;
+  saveCollectionsToStorage();
+  updateCollectionControls();
+  if (S.filterOwned) renderOwnedProducts();
+}
+
+function createCollection(name) {
+  const col = { id: makeCollId(), name: name || 'New Collection', items: new Map() };
+  S.collections.push(col);
+  saveCollectionsToStorage();
+  switchCollection(col.id);
+}
+
+function deleteCollection(id) {
+  if (S.collections.length <= 1) return;
+  S.collections = S.collections.filter(c => c.id !== id);
+  if (S.activeCollectionId === id) {
+    const next = S.collections[0];
+    S.activeCollectionId = next.id;
+    S.inventory = next.items;
+  }
+  saveCollectionsToStorage();
+  updateCollectionControls();
+  if (S.filterOwned) renderOwnedProducts();
+}
+
+function renameCollection(id, newName) {
+  const col = S.collections.find(c => c.id === id);
+  if (!col || !newName.trim()) return;
+  col.name = newName.trim();
+  saveCollectionsToStorage();
+  updateCollectionControls();
 }
 
 // ── Show/hide states ──────────────────────────────────────────────────────
@@ -159,6 +246,7 @@ function showState(name) {
   E.stateNoRes.style.display    = name === 'noresults'  ? 'flex' : 'none';
   E.tableWrap.style.display     = name === 'table'      ? 'block': 'none';
   E.stateSetsView.style.display = name === 'sets-view'  ? 'flex' : 'none';
+  E.stateOwnedView.style.display = name === 'owned-view' ? 'flex' : 'none';
 }
 
 // ── Fetch ─────────────────────────────────────────────────────────────────
@@ -211,6 +299,7 @@ function switchGame(key) {
   E.setSearch.value = '';
 
   applyAccent(key);
+  if (window.__updateWalletAccent) window.__updateWalletAccent();
   document.querySelectorAll('.game-tab').forEach(t => {
     const active = t.dataset.game === key;
     t.classList.toggle('active', active);
@@ -322,6 +411,11 @@ async function loadSet(slug, name, btn) {
     if (lid !== S.loadId) return;
 
     S.allCards = data.cards || [];
+    // Populate card cache for owned products view
+    for (const card of S.allCards) {
+      const cacheKey = `${S.game}|${slug}|${card.id}`;
+      S.cardCache.set(cacheKey, card);
+    }
     if (btn) btn.classList.remove('loading');
 
     // Clean up title
@@ -359,6 +453,7 @@ async function loadSet(slug, name, btn) {
     cacheSetStats(slug, S.allCards);
     renderCards();
     updateStats();
+    updateCollectionControls();
   } catch (err) {
     if (lid !== S.loadId) return;
     if (btn) btn.classList.remove('loading', 'active');
@@ -386,6 +481,11 @@ function getProcessedCards() {
   let cards = [...S.allCards];
   const q = S.query.toLowerCase().trim();
   if (q) cards = cards.filter(c => c.name.toLowerCase().includes(q));
+
+  // Filter owned
+  if (S.filterOwned && S.wallet.connected) {
+    cards = cards.filter(c => invTotalForCard(c.id) > 0);
+  }
 
   // Split sealed from individual cards
   const sealed = cards.filter(c => c.sealed);
@@ -435,7 +535,7 @@ function renderCards() {
   if (hasSealedSection) {
     const dividerRow = document.createElement('tr');
     dividerRow.className = 'section-divider';
-    dividerRow.innerHTML = `<td colspan="6"><span class="section-label sealed-label">📦 Sealed Products <span class="section-count">${sealedCards.length}</span></span></td>`;
+    dividerRow.innerHTML = `<td colspan="7"><span class="section-label sealed-label">📦 Sealed Products <span class="section-count">${sealedCards.length}</span></span></td>`;
     frag.appendChild(dividerRow);
 
     sealedCards.forEach((card, idx) => {
@@ -448,6 +548,8 @@ function renderCards() {
       const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
       const pv = parsePrice(card.psa10);
       const pClass = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
+      const total = invTotalForCard(card.id);
+      const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
       tr.innerHTML = `
         <td class="td-num">${++rowNum}</td>
         <td class="td-img">
@@ -458,7 +560,8 @@ function renderCards() {
         <td><a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a></td>
         <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
         <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
-        <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>`;
+        <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>
+        <td class="td-action">${qtyBadge}<button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Inventory options">⋮</button></td>`;
       frag.appendChild(tr);
     });
   }
@@ -467,7 +570,7 @@ function renderCards() {
   if (hasSealedSection && regularCards.length > 0) {
     const dividerRow2 = document.createElement('tr');
     dividerRow2.className = 'section-divider';
-    dividerRow2.innerHTML = `<td colspan="6"><span class="section-label cards-label">🃏 Individual Cards <span class="section-count">${regularCards.length}</span></span></td>`;
+    dividerRow2.innerHTML = `<td colspan="7"><span class="section-label cards-label">🃏 Individual Cards <span class="section-count">${regularCards.length}</span></span></td>`;
     frag.appendChild(dividerRow2);
   }
 
@@ -482,6 +585,8 @@ function renderCards() {
     const pClass  = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
     const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
     const u2Class = card.ungraded === '—' ? 'price price-nil' : uClass;
+    const total = invTotalForCard(card.id);
+    const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
 
     tr.innerHTML = `
       <td class="td-num">${++rowNum}</td>
@@ -493,7 +598,8 @@ function renderCards() {
       <td><a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a></td>
       <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
       <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
-      <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>`;
+      <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>
+      <td class="td-action">${qtyBadge}<button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Inventory options">⋮</button></td>`;
     frag.appendChild(tr);
   });
 
@@ -523,6 +629,7 @@ function filterSetsOverview(query) {
 let searchTimer;
 E.cardSearch.addEventListener('input', e => {
   if (S.setsView) { filterSetsOverview(e.target.value); return; }
+  if (S.filterOwned) { filterOwnedProducts(e.target.value); return; }
   S.query = e.target.value;
   clearTimeout(searchTimer);
   searchTimer = setTimeout(renderCards, 160);
@@ -556,8 +663,38 @@ function sortSetsOverview(sortValue) {
   E.setsOvTbody.appendChild(frag);
 }
 
+function filterOwnedProducts(query) {
+  const q = query.toLowerCase().trim();
+  E.ownedProductsTbody.querySelectorAll('tr.owned-row').forEach(row => {
+    const name = row.querySelector('.td-name')?.textContent?.toLowerCase() || '';
+    row.style.display = !q || name.includes(q) ? '' : 'none';
+  });
+}
+
+function sortOwnedProducts(sortValue) {
+  const rows = Array.from(E.ownedProductsTbody.querySelectorAll('tr.owned-row'));
+  rows.sort((a, b) => {
+    const getPrice = (row, col) => parseFloat(row.cells[col]?.textContent || '0') || 0;
+    const getNum = (row, col) => parseInt(row.cells[col]?.textContent || '0') || 0;
+    const getName = (row) => row.cells[2]?.textContent || '';
+
+    switch (sortValue) {
+      case 'name-asc':    return getName(a).localeCompare(getName(b));
+      case 'price-desc':  return getPrice(b, 5) - getPrice(a, 5);  // Ungraded col
+      case 'price-asc':   return getPrice(a, 5) - getPrice(b, 5);
+      case 'psa10-desc':  return getPrice(b, 7) - getPrice(a, 7);  // PSA 10 col
+      case 'grade9-desc': return getPrice(b, 6) - getPrice(a, 6);  // Grade 9 col
+      default: return getNum(a, 0) - getNum(b, 0);                 // Default: restore index order
+    }
+  });
+  const frag = document.createDocumentFragment();
+  rows.forEach(r => frag.appendChild(r));
+  E.ownedProductsTbody.appendChild(frag);
+}
+
 E.sortSelect.addEventListener('change', e => {
   if (S.setsView) { sortSetsOverview(e.target.value); return; }
+  if (S.filterOwned) { sortOwnedProducts(e.target.value); return; }
   S.sort = e.target.value;
   document.querySelectorAll('.price-table th.sortable').forEach(t => t.classList.remove('sort-active'));
   renderCards();
@@ -868,10 +1005,145 @@ async function loadAllStats() {
   E.btnLoadAllStats.textContent = 'Load All Stats';
 }
 
+// ── Inventory Management ──────────────────────────────────────────────────
+function loadCollectionsFromStorage() {
+  try {
+    // Legacy migration
+    const legacy = localStorage.getItem('tcg-inventory');
+    if (legacy) {
+      try {
+        const obj = JSON.parse(legacy);
+        const items = new Map(Object.entries(obj).map(([k, v]) => [k, Number(v)]));
+        const col = { id: makeCollId(), name: 'My Collection', items };
+        S.collections = [col];
+        S.activeCollectionId = col.id;
+        S.inventory = col.items;
+        localStorage.removeItem('tcg-inventory');
+        localStorage.removeItem('tcg-inventory-synced');
+        saveCollectionsToStorage();
+        return;
+      } catch {}
+    }
+
+    const raw = localStorage.getItem('tcg-collections');
+    if (raw) {
+      try {
+        const { cols, active } = JSON.parse(raw);
+        S.collections = cols.map(c => ({
+          id: c.id,
+          name: c.name,
+          items: new Map(Object.entries(c.items || {}).map(([k, v] ) => [k, Number(v)]))
+        }));
+        S.activeCollectionId = active;
+        const col = getActiveCollection();
+        if (col) { S.activeCollectionId = col.id; S.inventory = col.items; }
+      } catch {}
+    }
+  } catch (err) { console.warn('[collections] load from storage failed', err); }
+  ensureDefaultCollection();
+}
+
+async function syncInventoryToContract() {
+  if (!S.wallet.connected || !window.__inventory?.isAvailable()) {
+    E.btnSyncInv?.classList.remove('syncing');
+    return;
+  }
+
+  E.btnSyncInv?.classList.add('syncing');
+  E.btnSyncInv.textContent = 'Syncing…';
+  E.btnSyncInv.disabled = true;
+
+  try {
+    const toSync = [];
+    for (const [k, v] of S.inventory) {
+      if (!S.inventorySynced.has(k)) {
+        toSync.push({ key: k, qty: v });
+      }
+    }
+
+    for (const { key, qty } of toSync) {
+      const [game, slug, cardId, grading] = key.split('|');
+      if (qty > 0) {
+        await window.__inventory.setCardQuantity(game, slug, cardId, Number(grading), qty);
+      }
+      S.inventorySynced.add(key);
+    }
+
+    saveCollectionsToStorage();
+    E.btnSyncInv.textContent = toSync.length > 0 ? 'Synced!' : 'Up to date';
+  } catch (err) {
+    console.error('[inventory] sync failed', err);
+    E.btnSyncInv.textContent = 'Sync failed';
+  } finally {
+    E.btnSyncInv?.classList.remove('syncing');
+    E.btnSyncInv.disabled = false;
+    setTimeout(() => {
+      if (E.btnSyncInv) E.btnSyncInv.textContent = '↔ Sync';
+    }, 2000);
+  }
+}
+
+function saveCollectionsToStorage() {
+  try {
+    localStorage.setItem('tcg-collections', JSON.stringify({
+      cols: S.collections.map(c => ({ id: c.id, name: c.name, items: Object.fromEntries(c.items) })),
+      active: S.activeCollectionId
+    }));
+    localStorage.setItem('tcg-inventory-synced', JSON.stringify([...S.inventorySynced]));
+  } catch (err) { console.warn('[collections] save to storage failed', err); }
+}
+
+function updateInventoryUI() {
+  const connected = S.wallet.connected;
+  // Enable the owned button always (there's always a collection)
+  if (E.filterOwnedBtn) E.filterOwnedBtn.disabled = false;
+  if (E.btnSyncInv) E.btnSyncInv.disabled = !connected;
+}
+
+function updateCollectionControls() {
+  const inOwned = S.filterOwned;
+  // toolbar-left: show set-title OR collection-name-input
+  E.setTitle.style.display = inOwned ? 'none' : '';
+  E.setExtLink.style.display = inOwned ? 'none' : (S.slug ? '' : 'none');
+  E.collectionNameInput.style.display = inOwned ? '' : 'none';
+  // toolbar-right: show collection controls only in owned view
+  E.collectionControls.style.display = inOwned ? 'flex' : 'none';
+
+  if (!inOwned) return;
+
+  const col = getActiveCollection();
+  E.collectionNameInput.value = col?.name || '';
+  E.collectionSelect.innerHTML = S.collections.map(c =>
+    `<option value="${escA(c.id)}"${c.id === S.activeCollectionId ? ' selected' : ''}>${esc(c.name)}</option>`
+  ).join('');
+  E.btnCollectionDelete.disabled = S.collections.length <= 1;
+}
+
+// ── Wallet State Handler ──────────────────────────────────────────────────
+window.__walletStateChange = function({ address, isConnected }) {
+  S.wallet.connected = isConnected;
+  S.wallet.address = address || null;
+  if (isConnected && address) {
+    localStorage.setItem('tcg-wallet-addr', address);
+  } else {
+    localStorage.removeItem('tcg-wallet-addr');
+  }
+  if (E.btnSyncInv) E.btnSyncInv.disabled = !isConnected;
+  updateInventoryUI();
+};
+
 // ── Init ──────────────────────────────────────────────────────────────────
 async function init() {
   applyAccent(S.game);
+  if (window.__updateWalletAccent) window.__updateWalletAccent();
   loadStatsFromStorage();
+  loadCollectionsFromStorage();
+  console.log('[init] inventory loaded:', S.inventory.size, 'items');
+  console.log('[init] filter btn:', E.filterOwnedBtn);
+  updateInventoryUI();
+
+  const savedAddr = localStorage.getItem('tcg-wallet-addr');
+  if (savedAddr) S.wallet.address = savedAddr;
 
   if (!API) {
     E.setSkeleton.style.display = 'none';
@@ -908,6 +1180,116 @@ async function init() {
   }
 }
 
+// ── Render Owned Products Table ──────────────────────────────────────────
+async function renderOwnedProducts() {
+  console.log('[renderOwnedProducts] starting, inventory size:', S.inventory.size);
+  console.log('[renderOwnedProducts] cardCache size:', S.cardCache.size);
+
+  const items = [];
+  const setsToFetch = new Set();
+
+  for (const [key, qty] of S.inventory) {
+    const [game, slug, cardId, grading] = key.split('|');
+    const g = S.games[game];
+    if (!g) continue;
+
+    const sets = g.sets || [];
+    const set = sets.find(s => s.slug === slug);
+    if (!set) continue;
+
+    const cardKey = `${game}|${slug}|${cardId}`;
+    const cardEntry = items.find(i => i.cardKey === cardKey);
+
+    if (!cardEntry) {
+      items.push({
+        cardKey,
+        game, slug, cardId,
+        gameName: g.label,
+        setName: set.name,
+        card: null,
+        qty: { 0: 0, 9: 0, 10: 0 }
+      });
+    }
+
+    const entry = items.find(i => i.cardKey === cardKey);
+    entry.qty[parseInt(grading)] = qty;
+
+    // Check if this card is in cache; if not, mark set for fetching
+    if (!S.cardCache.has(cardKey)) {
+      setsToFetch.add(slug);
+    }
+  }
+
+  // Fetch any missing sets
+  if (setsToFetch.size > 0) {
+    console.log('[renderOwnedProducts] fetching', setsToFetch.size, 'sets');
+    if (E.loadingLabel) E.loadingLabel.textContent = 'Loading collection…';
+    showState('loading');
+    for (const slug of setsToFetch) {
+      try {
+        const d = await fetchSet(slug);
+        if (d.cards && d.cards.length) {
+          for (const card of d.cards) {
+            // Find the game from items using this slug
+            const item = items.find(i => i.slug === slug);
+            const game = item?.game || S.game;
+            const cacheKey = `${game}|${slug}|${card.id}`;
+            S.cardCache.set(cacheKey, card);
+          }
+        }
+      } catch (err) {
+        console.warn('[renderOwnedProducts] failed to fetch set', slug, err);
+      }
+    }
+  }
+
+  console.log('[renderOwnedProducts] found', items.length, 'unique items to render');
+  let html = '';
+  let rowIdx = 1;
+  items.forEach((item) => {
+    const cacheKey = `${item.game}|${item.slug}|${item.cardId}`;
+    const card = S.cardCache.get(cacheKey);
+    if (!card) {
+      console.log('[renderOwnedProducts] card still not in cache:', cacheKey);
+      return;
+    }
+
+    const thumb = card.thumb || card.image || '';
+    const imgHtml = thumb ? `<img class="card-thumb" src="${escA(thumb)}" alt="${escA(card.name)}" style="cursor:pointer">` : '';
+    const total = item.qty[0] + item.qty[9] + item.qty[10];
+    const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
+
+    html += `
+      <tr class="owned-row">
+        <td class="td-num">${rowIdx}</td>
+        <td class="td-img">${imgHtml}</td>
+        <td class="td-name" title="${escA(card.name)}">${esc(card.name)}</td>
+        <td class="td-name" title="${escA(item.setName)}">${esc(item.setName)}</td>
+        <td class="td-name" title="${escA(item.gameName)}">${esc(item.gameName)}</td>
+        <td class="td-price">${esc(card.ungraded)}</td>
+        <td class="td-price">${esc(card.grade9)}</td>
+        <td class="td-price">${esc(card.psa10)}</td>
+        <td class="td-action">${qtyBadge}<button class="btn-dots" data-card-id="${escA(card.id)}" data-game="${escA(item.game)}" data-slug="${escA(item.slug)}" aria-label="Inventory options">⋮</button></td>
+      </tr>
+    `;
+    rowIdx++;
+  });
+
+  E.ownedProductsTbody.innerHTML = html;
+  updateCollectionControls();
+  showState('owned-view');
+}
+
+// ── Filter Owned Toggle ───────────────────────────────────────────────────
+E.filterOwnedBtn?.addEventListener('click', async () => {
+  S.filterOwned = !S.filterOwned;
+  E.filterOwnedBtn.setAttribute('aria-pressed', S.filterOwned ? 'true' : 'false');
+  E.filterOwnedBtn.classList.toggle('active', S.filterOwned);
+  updateCollectionControls();
+  if (S.filterOwned) await renderOwnedProducts();
+  else renderCards();
+});
+
 // ── Sets Overview events ──────────────────────────────────────────────────
 E.btnViewSets.addEventListener('click', enterSetsView);
 E.btnLoadAllStats.addEventListener('click', loadAllStats);
@@ -924,6 +1306,25 @@ E.setsOvTbody.addEventListener('click', (e) => {
 // ── Cache click handlers ──────────────────────────────────────────────────
 E.cachePill.addEventListener('click', refreshCacheNow);
 E.statCache.addEventListener('click', refreshCacheNow);
+
+// ── Collection controls ───────────────────────────────────────────────────
+E.collectionSelect?.addEventListener('change', () => switchCollection(E.collectionSelect.value));
+
+E.btnCollectionAdd?.addEventListener('click', () => {
+  const name = prompt('Collection name:', `Collection ${S.collections.length + 1}`);
+  if (name !== null) createCollection(name.trim() || `Collection ${S.collections.length + 1}`);
+});
+
+E.btnCollectionDelete?.addEventListener('click', () => {
+  const col = getActiveCollection();
+  if (!col || S.collections.length <= 1) return;
+  if (confirm(`Delete "${col.name}"? This cannot be undone.`)) deleteCollection(col.id);
+});
+
+E.collectionNameInput?.addEventListener('change', () =>
+  renameCollection(S.activeCollectionId, E.collectionNameInput.value));
+E.collectionNameInput?.addEventListener('blur', () =>
+  renameCollection(S.activeCollectionId, E.collectionNameInput.value));
 
 init();
 
@@ -999,6 +1400,183 @@ E.imgModalClose.addEventListener('click', closeImgModal);
 E.imgModalBackdrop.addEventListener('click', closeImgModal);
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && E.imgModal.style.display !== 'none') closeImgModal();
+});
+
+// ── Inventory Popover ─────────────────────────────────────────────────────
+let invCurrentCard = null;
+let invCurrentGame = null;
+let invCurrentSlug = null;
+
+function openInvPopover(card, triggerBtn, game, slug) {
+  invCurrentCard = card;
+  invCurrentGame = game || S.game;
+  invCurrentSlug = slug || S.slug;
+  E.invCardName.textContent = card.name;
+  refreshInvQtyRows();
+  E.invStatus.textContent = '';
+  E.invQtyInput.value = '1';
+  const rect = triggerBtn.getBoundingClientRect();
+  E.invPopover.style.display = 'block';
+  const top = rect.bottom + 6;
+  let left = rect.right - 260;
+  left = Math.max(8, Math.min(left, window.innerWidth - 248));
+  E.invPopover.style.top = `${top}px`;
+  E.invPopover.style.left = `${left}px`;
+}
+
+function closeInvPopover() {
+  E.invPopover.style.display = 'none';
+  invCurrentCard = null;
+  invCurrentGame = null;
+  invCurrentSlug = null;
+}
+
+function refreshInvQtyRows() {
+  if (!invCurrentCard) return;
+  const labels = { 0: 'Ungraded', 9: 'Grade 9', 10: 'PSA 10' };
+  const gradings = [0, 9, 10];
+  let hasQty = false;
+
+  gradings.forEach(g => {
+    const qty = S.inventory.get(invKey(invCurrentGame, invCurrentSlug, invCurrentCard.id, g)) || 0;
+    const rowId = `inv-qty-row-${g}`;
+    let row = document.getElementById(rowId);
+
+    if (qty > 0) {
+      hasQty = true;
+      if (!row) {
+        row = document.createElement('div');
+        row.id = rowId;
+        row.className = 'inv-qty-row';
+        row.innerHTML = `<span>${labels[g]}</span><span class="inv-qty-val"></span>`;
+        E.invQtyRows.appendChild(row);
+      }
+      // Update qty value only
+      const valSpan = row.querySelector('.inv-qty-val');
+      if (valSpan) valSpan.textContent = qty;
+    } else {
+      if (row) row.remove();
+    }
+  });
+
+  // Show empty message only if no quantities exist
+  if (!hasQty && !E.invQtyRows.querySelector('.inv-qty-empty')) {
+    const col = getActiveCollection();
+    const colName = col?.name || 'Collection';
+    const emptyDiv = document.createElement('div');
+    emptyDiv.className = 'inv-qty-empty';
+    emptyDiv.textContent = `Not in ${colName}`;
+    E.invQtyRows.appendChild(emptyDiv);
+  } else if (hasQty) {
+    const empty = E.invQtyRows.querySelector('.inv-qty-empty');
+    if (empty) empty.remove();
+  }
+}
+
+function invAction(action) {
+  if (!invCurrentCard) return;
+  const grading = Number(E.invGrading.value);
+  const qty = parseInt(E.invQtyInput.value, 10);
+  if (!qty || qty < 1) {
+    E.invStatus.textContent = 'Enter a valid quantity.';
+    return;
+  }
+
+  const key = invKey(invCurrentGame, invCurrentSlug, invCurrentCard.id, grading);
+  const current = S.inventory.get(key) || 0;
+  let newQty = current;
+
+  if (action === 'add') newQty = current + qty;
+  else if (action === 'remove') {
+    if (current < qty) {
+      E.invStatus.textContent = 'Not enough in inventory.';
+      return;
+    }
+    newQty = current - qty;
+  } else if (action === 'set') newQty = qty;
+
+  if (newQty > 0) {
+    S.inventory.set(key, newQty);
+  } else {
+    S.inventory.delete(key);
+  }
+
+  // Mark as unsynced
+  S.inventorySynced.delete(key);
+  saveCollectionsToStorage();
+
+  // Populate card cache for owned products view
+  if (invCurrentCard && invCurrentGame && invCurrentSlug) {
+    const cacheKey = `${invCurrentGame}|${invCurrentSlug}|${invCurrentCard.id}`;
+    S.cardCache.set(cacheKey, invCurrentCard);
+  }
+
+  E.invStatus.textContent = 'Saved locally. Sync to blockchain →';
+  refreshInvQtyRows();
+
+  // Update owned products table if visible
+  if (S.filterOwned) {
+    const totalQty = [0, 9, 10].reduce((sum, g) => sum + (S.inventory.get(invKey(invCurrentGame, invCurrentSlug, invCurrentCard.id, g)) || 0), 0);
+    const row = E.ownedProductsTbody.querySelector(`button[data-card-id="${escA(invCurrentCard.id)}"][data-game="${escA(invCurrentGame)}"][data-slug="${escA(invCurrentSlug)}"]`)?.closest('tr');
+    if (row) {
+      if (totalQty === 0) {
+        row.remove();
+      } else {
+        const badge = row.querySelector('.qty-badge');
+        if (badge) badge.textContent = totalQty;
+      }
+    }
+  }
+
+  if (invCurrentSlug && S.allCards.length) renderCards();
+
+  // Show sync button more prominently
+  if (E.btnSyncInv) {
+    E.btnSyncInv.classList.add('unsync');
+  }
+}
+
+E.btnInvAdd.addEventListener('click', () => invAction('add'));
+E.btnInvRemove.addEventListener('click', () => invAction('remove'));
+E.btnInvSet.addEventListener('click', () => invAction('set'));
+E.invClose.addEventListener('click', closeInvPopover);
+
+E.btnSyncInv?.addEventListener('click', () => {
+  if (!E.btnSyncInv.disabled) syncInventoryToContract();
+});
+
+E.tbody.addEventListener('click', e => {
+  const btn = e.target.closest('.btn-dots');
+  if (!btn) return;
+  const card = S.allCards.find(c => c.id === btn.dataset.cardId);
+  if (!card) return;
+  if (E.invPopover.style.display !== 'none' && invCurrentCard?.id === card.id) {
+    closeInvPopover();
+  } else {
+    openInvPopover(card, btn);
+  }
+});
+
+E.ownedProductsTbody.addEventListener('click', e => {
+  const btn = e.target.closest('.btn-dots');
+  if (!btn) return;
+  const cardId = btn.dataset.cardId;
+  const game = btn.dataset.game;
+  const slug = btn.dataset.slug;
+  const card = Array.from(S.cardCache.values()).find(c => c.id === cardId);
+  if (!card) return;
+  if (E.invPopover.style.display !== 'none' && invCurrentCard?.id === card.id) {
+    closeInvPopover();
+  } else {
+    openInvPopover(card, btn, game, slug);
+  }
+});
+
+document.addEventListener('click', e => {
+  if (!E.invPopover || E.invPopover.style.display === 'none') return;
+  if (!E.invPopover.contains(e.target) && !e.target.closest('.btn-dots')) {
+    closeInvPopover();
+  }
 });
 
 // ── Game Dropdown ─────────────────────────────────────────────────────────

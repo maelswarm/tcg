@@ -8,6 +8,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
+  <script type="module" src="wallet.js"></script>
+  <script type="module" src="inventory.js"></script>
 </head>
 <body>
 
@@ -30,6 +32,9 @@
       <div class="header-right">
         <span class="source-badge">Live data via <a href="https://www.pricecharting.com" target="_blank" rel="noopener">PriceCharting</a></span>
         <div class="cache-pill" id="cache-pill" title="Set list cache status"></div>
+        <div class="wallet-wrap" id="wallet-wrap">
+          <appkit-button size="sm" label="Connect Wallet" loadingLabel="Connecting…"></appkit-button>
+        </div>
         <button class="theme-toggle" data-theme-toggle aria-label="Switch to light mode">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         </button>
@@ -99,6 +104,8 @@
           <a class="set-ext-link" id="set-ext-link" href="#" target="_blank" rel="noopener" style="display:none">
             View on PriceCharting ↗
           </a>
+          <input class="collection-name-input" id="collection-name-input" style="display:none"
+                 type="text" maxlength="60" aria-label="Collection name" spellcheck="false">
         </div>
         <div class="toolbar-right">
           <div class="search-wrap">
@@ -113,6 +120,26 @@
             <option value="grade9-desc">Grade 9: High → Low</option>
             <option value="name-asc">Name: A → Z</option>
           </select>
+          <button class="btn-filter-owned" id="btn-filter-owned" aria-pressed="false" title="Show only owned cards" disabled>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M20 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/>
+              <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+            </svg>
+            Owned
+          </button>
+          <button class="btn-sync-inv" id="btn-sync-inv" title="Sync inventory to blockchain" disabled>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0114.85-3.36M20.49 15a9 9 0 0 1-14.85 3.36"/>
+            </svg>
+            ↔ Sync
+          </button>
+          <div class="collection-controls" id="collection-controls" style="display:none">
+            <select class="collection-select" id="collection-select" title="Switch collection"></select>
+            <button class="btn-icon" id="btn-collection-add" title="New collection">+</button>
+            <button class="btn-icon btn-icon-danger" id="btn-collection-delete" title="Delete collection">🗑</button>
+          </div>
         </div>
       </div>
 
@@ -184,6 +211,28 @@
           </div>
         </div>
 
+        <!-- Owned Products -->
+        <div class="owned-products-wrap" id="state-owned-view" style="display:none">
+          <div class="table-wrap">
+            <table class="price-table owned-products-table" id="owned-products-table" aria-label="Owned products">
+              <thead>
+                <tr>
+                  <th class="th-num">#</th>
+                  <th class="th-img"><span class="sr-only">Image</span></th>
+                  <th class="th-name">Card</th>
+                  <th class="th-name">Set</th>
+                  <th class="th-name">Game</th>
+                  <th class="th-price">Ungraded</th>
+                  <th class="th-price">Grade 9</th>
+                  <th class="th-price">PSA 10</th>
+                  <th class="th-action"></th>
+                </tr>
+              </thead>
+              <tbody id="owned-products-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- Table -->
         <div class="table-wrap" id="table-wrap" style="display:none">
           <table class="price-table" aria-label="Card prices">
@@ -195,6 +244,7 @@
                 <th class="th-price sortable" scope="col" data-col="ungraded">Ungraded <span class="sort-caret">↕</span></th>
                 <th class="th-price th-grade9 sortable" scope="col" data-col="grade9">Grade 9 <span class="sort-caret">↕</span></th>
                 <th class="th-price sortable" scope="col" data-col="psa10">PSA 10 <span class="sort-caret">↕</span></th>
+                <th class="th-action" scope="col"><span class="sr-only">Inventory</span></th>
               </tr>
             </thead>
             <tbody id="price-tbody"></tbody>
@@ -219,6 +269,29 @@
       <img class="img-modal-img" id="img-modal-img" src="" alt="" />
       <p class="img-modal-name" id="img-modal-name"></p>
     </div>
+  </div>
+
+  <!-- Inventory Popover -->
+  <div class="inv-popover" id="inv-popover" style="display:none" role="dialog" aria-label="Manage inventory">
+    <div class="inv-popover-head">
+      <span class="inv-card-name" id="inv-card-name"></span>
+      <button class="inv-close" id="inv-popover-close" aria-label="Close">✕</button>
+    </div>
+    <div class="inv-qty-rows" id="inv-qty-rows"></div>
+    <div class="inv-form">
+      <select class="inv-grading-select" id="inv-grading-select">
+        <option value="0">Ungraded</option>
+        <option value="9">Grade 9</option>
+        <option value="10">PSA 10</option>
+      </select>
+      <input type="number" class="inv-qty-input" id="inv-qty-input" min="1" value="1">
+    </div>
+    <div class="inv-action-btns">
+      <button class="btn-inv btn-inv-add" id="btn-inv-add">+ Add</button>
+      <button class="btn-inv btn-inv-remove" id="btn-inv-remove">− Remove</button>
+      <button class="btn-inv btn-inv-set" id="btn-inv-set">= Set</button>
+    </div>
+    <div class="inv-status" id="inv-status"></div>
   </div>
 
   <script src="app.js"></script>
