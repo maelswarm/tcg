@@ -1,3 +1,7 @@
+<img width="3839" height="1990" alt="image" src="https://github.com/user-attachments/assets/6ce9e05c-c40c-4f19-8545-d355a6c23d68" />
+
+##
+
 # TCG Price Index
 
 Live card price dashboard for 10 TCG games (Pokémon, MTG, Yu-Gi-Oh, One Piece, Lorcana, Digimon, Dragon Ball, Gundam, Star Wars Unlimited, Riftbound). Powered by [PriceCharting](https://www.pricecharting.com).
