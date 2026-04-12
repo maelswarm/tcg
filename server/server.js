@@ -2,7 +2,6 @@
 const http = require('http');
 const https = require('https');
 const url = require('url');
-const querystring = require('querystring');
 const fs = require('fs');
 const nodePath = require('path');
 
@@ -6505,97 +6504,45 @@ const SLUG_PREFIXES = {
   riftbound:  'riftbound',
 };
 
-const HEADERS_OUT = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'en-US,en;q=0.9',
-  'Accept-Encoding': 'identity',
-  'Cache-Control': 'no-cache',
-};
-
-const HTTP_TIMEOUT_MS = 20000; // 20 s per request to PriceCharting
-
-function httpGet(targetUrl) {
+// ── HTTP Helpers ──────────────────────────────────────────────────────────
+function httpGet(urlStr) {
   return new Promise((resolve, reject) => {
-    const req = https.get(targetUrl, { headers: HEADERS_OUT }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        const loc = res.headers.location.startsWith('http')
-          ? res.headers.location
-          : `https://www.pricecharting.com${res.headers.location}`;
-        httpGet(loc).then(resolve).catch(reject);
-        return;
-      }
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => resolve({ html: data, status: res.statusCode }));
-    });
-    req.setTimeout(HTTP_TIMEOUT_MS, () => { req.destroy(new Error('Request timed out')); });
-    req.on('error', reject);
+    // Add throttle delay before request
+    const delay = 500 + Math.random() * 1000; // 500-1500ms random throttle
+    setTimeout(() => {
+      const opts = { timeout: 30000 };
+      https.get(urlStr, opts, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => resolve(data));
+      }).on('error', reject);
+    }, delay);
   });
 }
 
-// Retry wrappers: 3 attempts, 1–1.5s random delay between, only give up after all fail
-async function httpGetRetry(targetUrl, label = '') {
-  let lastStatus = 0, lastHtml = '', lastErr = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const { html, status } = await httpGet(targetUrl);
-      if (status === 200) return { html, status };
-      lastStatus = status; lastHtml = html; lastErr = null;
-      console.warn(`[http-retry] ${label || targetUrl} — attempt ${attempt}/3 got HTTP ${status}`);
-    } catch (err) {
-      lastStatus = 0; lastHtml = ''; lastErr = err;
-      console.warn(`[http-retry] ${label || targetUrl} — attempt ${attempt}/3 threw: ${err.message}`);
-    }
-    if (attempt < 3) await new Promise(r => setTimeout(r, 1000 + Math.random() * 500));
-  }
-  if (lastErr) throw lastErr;
-  return { html: lastHtml, status: lastStatus };
-}
-
-async function httpPostRetry(targetUrl, postData, label = '') {
-  let lastStatus = 0, lastHtml = '', lastErr = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const { html, status } = await httpPost(targetUrl, postData);
-      if (status === 200) return { html, status };
-      lastStatus = status; lastHtml = html; lastErr = null;
-      console.warn(`[http-retry] ${label || targetUrl} — attempt ${attempt}/3 got HTTP ${status}`);
-    } catch (err) {
-      lastStatus = 0; lastHtml = ''; lastErr = err;
-      console.warn(`[http-retry] ${label || targetUrl} — attempt ${attempt}/3 threw: ${err.message}`);
-    }
-    if (attempt < 3) await new Promise(r => setTimeout(r, 1000 + Math.random() * 500));
-  }
-  if (lastErr) throw lastErr;
-  return { html: lastHtml, status: lastStatus };
-}
-
-function httpPost(targetUrl, postData) {
+function httpPost(urlStr, postData) {
   return new Promise((resolve, reject) => {
-    const parsed = new URL(targetUrl);
-    const body = querystring.stringify(postData);
-    const options = {
-      hostname: parsed.hostname,
-      port: 443,
-      path: parsed.pathname + parsed.search,
-      method: 'POST',
-      headers: {
-        ...HEADERS_OUT,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(body),
-        'Referer': targetUrl,
-      }
-    };
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => resolve({ html: data, status: res.statusCode }));
-    });
-    req.setTimeout(HTTP_TIMEOUT_MS, () => { req.destroy(new Error('Request timed out')); });
-    req.on('error', reject);
-    req.write(body);
-    req.end();
+    // Add throttle delay before request
+    const delay = 500 + Math.random() * 1000; // 500-1500ms random throttle
+    setTimeout(() => {
+      const parsedUrl = new URL(urlStr);
+      const body = new URLSearchParams(postData).toString();
+      const opts = {
+        hostname: parsedUrl.hostname,
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(body),
+        },
+        timeout: 30000,
+      };
+      https.request(opts, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => resolve(data));
+      }).on('error', reject).end(body);
+    }, delay);
   });
 }
 
@@ -6603,10 +6550,10 @@ function httpPost(targetUrl, postData) {
 async function scrapeSetsFromCategory(gameKey) {
   const gd = GAME_DATA[gameKey];
   if (!gd) return GAME_DATA[gameKey]?.sets || [];
-  
+
   const prefix = SLUG_PREFIXES[gameKey];
   try {
-    const { html } = await httpGet(gd.catUrl);
+    const html = await httpGet(gd.catUrl);
     const linkRegex = /href="\/console\/([^"#?]+)"[^>]*>\s*([^<\n]+?)\s*<\/a>/g;
     const seen = new Map();
     let m;
@@ -6741,41 +6688,57 @@ async function fetchSetPages(slug) {
     return { ...cached.data, fromCache: true, cachedAt: cached.fetchedAt };
   }
 
+  if (cached) {
+    const ageSeconds = Math.round((Date.now() - cached.fetchedAt) / 1000);
+    console.log(`[card-cache] EXPIRED ${slug} (age: ${ageSeconds}s) — re-fetching...`);
+  }
+
   const baseUrl = `https://www.pricecharting.com/console/${slug}`;
   const allCards = [];
-  const { html: html1, status: s1 } = await httpGetRetry(baseUrl, `${slug} p1`);
-  if (s1 !== 200) {
-    console.error(`[card-fetch] FAIL ${slug} — page 1 HTTP ${s1} — url: ${baseUrl} — body snippet: ${html1.slice(0, 200)}`);
-    if (s1 === 404 || s1 === 403) return { error: 'Set not found', cards: [], count: 0 };
-    return { error: `HTTP ${s1}`, cards: [], count: 0 };
+  let html1;
+  try {
+    html1 = await httpGet(baseUrl);
+  } catch (err) {
+    console.error(`[card-fetch] FAIL ${slug} — page 1 threw: ${err.message}`);
+    return { error: err.message, cards: [], count: 0 };
   }
 
   const titleMatch = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html1);
   const title = titleMatch ? htmlDecode(titleMatch[1].replace(/<[^>]+>/g, '').trim()) : slug;
-  allCards.push(...parseRows(html1));
+  const page1Cards = parseRows(html1);
+  allCards.push(...page1Cards);
+  console.log(`[card-fetch] PAGE 1 ${slug}: ${page1Cards.length} cards`);
 
   let nextData = parseNextCursor(html1);
+  console.log(`[card-fetch] PAGE 1 cursor: ${nextData ? 'found' : 'NOT FOUND'}`);
+
   let page = 2;
-  const MAX_PAGES = 60; // safety cap (~3,000 items max per set)
-  while (nextData && page <= MAX_PAGES) {
+  while (nextData) {
     try {
-      const { html: pageHtml, status: sp } = await httpPostRetry(baseUrl, {
+      console.log(`[card-fetch] Fetching PAGE ${page} ${slug}...`);
+      const pageHtml = await httpPost(baseUrl, {
         sort: nextData.sort || '',
         when: nextData.when || 'none',
         'release-date': nextData['release-date'] || '',
         cursor: nextData.cursor,
-      }, `${slug} p${page}`);
-      if (sp !== 200) {
-        console.error(`[card-fetch] FAIL ${slug} — page ${page} HTTP ${sp} — url: ${baseUrl} — body snippet: ${pageHtml.slice(0, 200)}`);
+      });
+      console.log(`[card-fetch] PAGE ${page} HTML length: ${pageHtml.length} bytes`);
+
+      const newCards = parseRows(pageHtml);
+      console.log(`[card-fetch] PAGE ${page} ${slug}: ${newCards.length} cards`);
+
+      if (newCards.length === 0) {
+        console.log(`[card-fetch] PAGE ${page} returned 0 cards - BREAKING`);
         break;
       }
-      const newCards = parseRows(pageHtml);
-      if (newCards.length === 0) break;
+
       allCards.push(...newCards);
       nextData = parseNextCursor(pageHtml);
+      console.log(`[card-fetch] PAGE ${page} cursor: ${nextData ? 'found' : 'NOT FOUND - WILL BREAK'}`);
+
       page++;
-      // Throttle between pages to avoid rate limiting
-      await new Promise(r => setTimeout(r, 1000 + Math.random() * 500));
+      // Throttle between pagination requests
+      await new Promise(r => setTimeout(r, 500));
     } catch (err) {
       console.error(`[card-fetch] FAIL ${slug} — page ${page} threw: ${err.message}`);
       break;
@@ -6875,14 +6838,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const sets = await scrapeSetsFromCategory(gameKey);
         setsCache[gameKey] = { sets, fetchedAt: Date.now() };
-        // Clear card cache for all sets in this game
-        const gameSetSlugs = sets.map(s => s.slug);
-        for (const slug of gameSetSlugs) {
-          if (cardCache.has(slug)) {
-            cardCache.delete(slug);
-          }
-        }
-        console.log(`[cache] Refreshed ${gameKey}: ${sets.length} sets, cleared ${gameSetSlugs.length} card caches`);
+        console.log(`[cache] Refreshed ${gameKey}: ${sets.length} sets`);
       } catch (e) {
         console.error(`[cache] Refresh error for ${gameKey}: ${e.message}`);
       }
@@ -6902,8 +6858,15 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': mime });
     res.end(fs.readFileSync(filePath));
   } else {
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Not found');
+    // For SPA routing: serve index.html for any non-existent non-API route
+    const indexPath = nodePath.join(SITE_DIR, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(fs.readFileSync(indexPath));
+    } else {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+    }
   }
 });
 

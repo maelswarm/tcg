@@ -1080,3 +1080,5 @@ appkit-button::part(button) {
   padding-top: var(--sp3);
   padding-bottom: var(--sp3);
 }
+
+/* ── Price History Chart Popup ────────────────────────── */

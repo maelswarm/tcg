@@ -1,0 +1,6 @@
+{
+  "name": "tcg-price-tracker",
+  "version": "1.0.0",
+  "main": "server/server.js",
+  "dependencies": {}
+}

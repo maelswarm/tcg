@@ -295,8 +295,7 @@ function switchGame(key) {
   S.visibleCards = [];
   S.query = '';
   S.setQuery = '';
-  S.setStats.clear(); // clear stats when switching games
-  loadStatsFromStorage(); // load stats for new game
+  loadStatsFromStorage(); // load stats for new game (keep other games' stats)
   E.cardSearch.value = '';
   E.setSearch.value = '';
 
@@ -327,6 +326,7 @@ function switchGame(key) {
   renderSetList();
   updateCachePill();
   updateLoadQueueUI();
+  pushState();
 }
 
 // ── Set list ──────────────────────────────────────────────────────────────
@@ -425,6 +425,7 @@ async function loadSet(slug, name, btn) {
       const cacheKey = `${S.game}|${slug}|${card.id}`;
       S.cardCache.set(cacheKey, card);
     }
+    saveProductsToStorage();
     if (btn) btn.classList.remove('loading');
 
     // Clean up title
@@ -455,6 +456,7 @@ async function loadSet(slug, name, btn) {
 
     S.query = '';
     E.cardSearch.value = '';
+    E.cardSearch.placeholder = 'Search cards…';
     S.sort = 'default';
     E.sortSelect.value = 'default';
     document.querySelectorAll('.price-table th.sortable').forEach(t => t.classList.remove('sort-active'));
@@ -463,6 +465,7 @@ async function loadSet(slug, name, btn) {
     renderCards();
     updateStats();
     updateCollectionControls();
+    pushState();
   } catch (err) {
     if (lid !== S.loadId) return;
     if (btn) btn.classList.remove('loading', 'active');
@@ -482,9 +485,114 @@ function updateStats() {
   E.statPsa10.textContent  = fmt(maxVal(regularCards.map(c => c.psa10)));
 }
 
+// ── URL Routing ────────────────────────────────────────────────────────────
+function buildPath() {
+  // Build path from current state: /{game}[/{slug}][/sets]
+  let path = `/${S.game}`;
+  if (S.setsView) {
+    path += '/sets';
+  } else if (S.slug) {
+    path += `/${encodeURIComponent(S.slug)}`;
+  }
+  return path;
+}
+
+function pushState() {
+  const path = buildPath();
+  window.history.pushState(
+    { game: S.game, slug: S.slug, setsView: S.setsView },
+    '',
+    path
+  );
+}
+
+async function restoreFromUrl() {
+  const path = location.pathname;
+  const parts = path.split('/').filter(Boolean); // remove empty strings from leading/trailing /
+
+  // Default to welcome state
+  if (parts.length === 0) {
+    S.setsView = false;
+    S.slug = null;
+    return;
+  }
+
+  const gameKey = parts[0];
+  // Verify game exists
+  if (!S.games[gameKey]) return;
+  if (gameKey !== S.game) {
+    S.game = gameKey;
+    applyAccent(gameKey);
+    if (window.__updateWalletAccent) window.__updateWalletAccent();
+    loadStatsFromStorage();
+    buildGameTabs();
+    if (E.gameDropdownLabel && S.games[gameKey]) {
+      E.gameDropdownLabel.textContent = S.games[gameKey].label;
+    }
+    document.querySelectorAll('.game-tab').forEach(t => {
+      const active = t.dataset.game === gameKey;
+      t.classList.toggle('active', active);
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+  }
+
+  // Check for /sets flag
+  if (parts[parts.length - 1] === 'sets') {
+    S.setsView = true;
+    E.btnViewSets.classList.add('active');
+    E.cardSearch.value = '';
+    E.cardSearch.placeholder = 'Filter sets…';
+    renderSetList();
+    renderSetsOverview();
+    showState('sets-view');
+    return;
+  }
+
+  // Otherwise load set if slug is present
+  if (parts.length >= 2) {
+    const slug = decodeURIComponent(parts[1]);
+    const setInfo = S.games[gameKey]?.sets?.find(s => s.slug === slug);
+    if (setInfo) {
+      S.slug = slug;
+      S.setsView = false;
+      E.btnViewSets.classList.remove('active');
+      await loadSet(slug, setInfo.name);
+    }
+  } else {
+    // Just game selected, no set
+    S.slug = null;
+    S.setsView = false;
+    renderSetList();
+    showState('welcome');
+  }
+}
+
 // ── Render cards ────────────────────────────────────────────────────────────
 const HOT_U   = 100;   // highlight ungraded ≥ $100
 const GEM_P10 = 500;   // highlight PSA10 ≥ $500
+
+function getGlobalSearchResults(query) {
+  const q = query.toLowerCase().trim();
+  if (!q) return [];
+
+  // Search across all cached cards and group by set
+  const results = new Map(); // slug → { setName, cards: [] }
+
+  for (const [cacheKey, card] of S.cardCache) {
+    if (!card.name.toLowerCase().includes(q)) continue;
+    const [game, slug] = cacheKey.split('|');
+    if (game !== S.game) continue;
+
+    if (!results.has(slug)) {
+      // Find set name from loaded sets
+      const setInfo = S.games[S.game]?.sets?.find(s => s.slug === slug);
+      results.set(slug, { setName: setInfo?.name || slug, cards: [] });
+    }
+    results.get(slug).cards.push(card);
+  }
+
+  return results;
+}
 
 function getProcessedCards() {
   let cards = [...S.allCards];
@@ -622,6 +730,97 @@ function renderCards() {
   E.footerCount.textContent = totalLabel;
 }
 
+function renderGlobalSearchResults(query) {
+  const globalResults = getGlobalSearchResults(query);
+  if (globalResults.size === 0) {
+    E.noResQ.textContent = query;
+    showState('noresults');
+    E.footerBar.style.display = 'none';
+    return;
+  }
+
+  showState('table');
+  const frag = document.createDocumentFragment();
+  let totalResults = 0;
+
+  // Sort results by set name
+  const sortedSets = Array.from(globalResults.entries()).sort((a, b) =>
+    a[1].setName.localeCompare(b[1].setName)
+  );
+
+  for (const [slug, { setName, cards }] of sortedSets) {
+    // Set divider
+    const setDiv = document.createElement('tr');
+    setDiv.className = 'section-divider';
+    setDiv.innerHTML = `<td colspan="7"><span class="section-label">${esc(setName)} <span class="section-count">${cards.length}</span></span></td>`;
+    frag.appendChild(setDiv);
+
+    // Render cards for this set
+    const sealed = cards.filter(c => c.sealed);
+    const individual = cards.filter(c => !c.sealed);
+    let rowNum = totalResults;
+
+    sealed.forEach(card => {
+      const tr = document.createElement('tr');
+      tr.className = 'card-row sealed-row';
+      const uv = parsePrice(card.ungraded);
+      const uClass = `price price-u${uv && uv >= HOT_U ? ' hot' : ''}`;
+      const u2Class = card.ungraded === '—' ? 'price price-nil' : uClass;
+      const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
+      const pv = parsePrice(card.psa10);
+      const pClass = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
+      const total = invTotalForCard(card.id);
+      const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
+      tr.innerHTML = `
+        <td class="td-num">${++rowNum}</td>
+        <td class="td-img">
+          ${card.img
+            ? `<img class="card-thumb" src="${escA(card.img)}" alt="${escA(card.name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>📦</div>'">`
+            : `<div class="card-thumb-ph">📦</div>`}
+        </td>
+        <td><a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a></td>
+        <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
+        <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
+        <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>
+        <td class="td-action">${qtyBadge}<button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Inventory options">⋮</button></td>`;
+      frag.appendChild(tr);
+    });
+
+    individual.forEach(card => {
+      const tr = document.createElement('tr');
+      tr.className = 'card-row';
+      const uv = parsePrice(card.ungraded);
+      const pv = parsePrice(card.psa10);
+      const uClass = `price price-u${uv && uv >= HOT_U ? ' hot' : ''}`;
+      const pClass  = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
+      const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
+      const u2Class = card.ungraded === '—' ? 'price price-nil' : uClass;
+      const total = invTotalForCard(card.id);
+      const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
+      tr.innerHTML = `
+        <td class="td-num">${++rowNum}</td>
+        <td class="td-img">
+          ${card.img
+            ? `<img class="card-thumb" src="${escA(card.img)}" alt="${escA(card.name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>🃏</div>'">`
+            : `<div class="card-thumb-ph">🃏</div>`}
+        </td>
+        <td><a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a></td>
+        <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
+        <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
+        <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>
+        <td class="td-action">${qtyBadge}<button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Inventory options">⋮</button></td>`;
+      frag.appendChild(tr);
+    });
+
+    totalResults += cards.length;
+  }
+
+  E.tbody.innerHTML = '';
+  E.tbody.appendChild(frag);
+  E.footerBar.style.display = 'flex';
+  E.footerCount.textContent = `${totalResults} results across ${globalResults.size} sets`;
+}
+
 function pCard(p, cls) {
   return p === '—' ? 'price price-nil' : cls;
 }
@@ -639,9 +838,22 @@ let searchTimer;
 E.cardSearch.addEventListener('input', e => {
   if (S.setsView) { filterSetsOverview(e.target.value); return; }
   if (S.filterOwned) { filterOwnedProducts(e.target.value); return; }
-  S.query = e.target.value;
+
+  const query = e.target.value;
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(renderCards, 160);
+
+  // If no set is loaded, do global search across all cached products
+  if (!S.slug) {
+    if (!query.trim()) {
+      showState('welcome');
+      return;
+    }
+    searchTimer = setTimeout(() => renderGlobalSearchResults(query), 160);
+  } else {
+    // Otherwise search within current set
+    S.query = query;
+    searchTimer = setTimeout(renderCards, 160);
+  }
 });
 
 function sortSetsOverview(sortValue) {
@@ -818,6 +1030,8 @@ async function refreshCacheNow() {
 // ── LocalStorage: Set stats cache ─────────────────────────────────────────
 const LS_STATS_KEY = 'tcg-set-stats-v2';
 const LS_STATS_TTL_MS = 60 * 60 * 1000; // 1 hour (matches server cache)
+const LS_PRODUCTS_KEY = 'tcg-products-v1';
+const LS_PRODUCTS_TTL_MS = 60 * 60 * 1000; // 1 hour (matches server cache)
 
 function loadStatsFromStorage() {
   try {
@@ -872,6 +1086,46 @@ function saveStatsToStorage() {
   }, 300);
 }
 
+// ── Product Cache Storage ──────────────────────────────────────────────────
+function loadProductsFromStorage() {
+  try {
+    const raw = localStorage.getItem(LS_PRODUCTS_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return;
+
+    const now = Date.now();
+    let loaded = 0, expired = 0;
+    for (const [cacheKey, rec] of Object.entries(parsed)) {
+      if (!rec || typeof rec !== 'object' || !rec.card) continue;
+      if (now - (rec.cachedAt || 0) > LS_PRODUCTS_TTL_MS) { expired++; continue; }
+      S.cardCache.set(cacheKey, rec.card);
+      loaded++;
+    }
+    if (expired > 0) saveProductsToStorage(); // rewrite without expired entries
+    if (loaded > 0) console.log(`[ls-products] loaded ${loaded} cached products${expired ? ` (${expired} expired)` : ''}`);
+  } catch (e) {
+    console.warn('[ls-products] load failed', e);
+  }
+}
+
+let saveProductsTimer = null;
+function saveProductsToStorage() {
+  clearTimeout(saveProductsTimer);
+  saveProductsTimer = setTimeout(() => {
+    try {
+      const entries = {};
+      const now = Date.now();
+      for (const [cacheKey, card] of S.cardCache.entries()) {
+        entries[cacheKey] = { card, cachedAt: now };
+      }
+      localStorage.setItem(LS_PRODUCTS_KEY, JSON.stringify(entries));
+    } catch (e) {
+      console.warn('[ls-products] save failed', e);
+    }
+  }, 500);
+}
+
 // ── Sets Overview ─────────────────────────────────────────────────────────
 function calcStats(cards) {
   const regular = cards.filter(c => !c.sealed);
@@ -922,13 +1176,14 @@ function enterSetsView() {
   });
   renderSetsOverview();
   showState('sets-view');
+  pushState();
 }
 
 function exitSetsView(restoreState = true) {
   S.setsView = false;
   E.btnViewSets.classList.remove('active');
   E.cardSearch.value = '';
-  E.cardSearch.placeholder = 'Search cards…';
+  E.cardSearch.placeholder = S.slug ? 'Search cards…' : 'Search all products…';
   E.sortSelect.value = S.sort; // restore card sort state
   // Re-highlight the active sidebar item if a set was loaded
   if (S.slug) {
@@ -946,6 +1201,7 @@ function exitSetsView(restoreState = true) {
   } else {
     showState('welcome');
   }
+  pushState();
 }
 
 function markQueuedRows(gameKey) {
@@ -1045,7 +1301,15 @@ async function loadSetStatsRow(slug, name, row, force = false) {
       const stats = calcStats(cards);
       stats.cachedAt = Date.now();
       S.setStats.set(slug, stats);
+
+      // Also cache the products for global search
+      for (const card of cards) {
+        const cacheKey = `${S.game}|${slug}|${card.id}`;
+        S.cardCache.set(cacheKey, card);
+      }
+
       saveStatsToStorage();
+      saveProductsToStorage();
       updateSovRow(row, stats);
       return;
     }
@@ -1065,8 +1329,6 @@ async function loadSetStatsRow(slug, name, row, force = false) {
 const loadQueues = {};
 let loadAllAbort = false; // only applies to current game's "Load All Stats"
 
-const LS_QUEUE_KEY = 'tcg-load-queue-v1';
-
 function getGameQueue(gameKey) {
   if (!loadQueues[gameKey]) {
     loadQueues[gameKey] = { queue: [], processing: false, inFlight: null };
@@ -1075,46 +1337,12 @@ function getGameQueue(gameKey) {
 }
 
 function saveQueuesToStorage() {
-  // Save queue items and any in-flight item (no DOM refs)
-  const data = { queues: {}, inFlight: {} };
-  for (const [gameKey, q] of Object.entries(loadQueues)) {
-    if (q.queue.length > 0) {
-      data.queues[gameKey] = q.queue.map(item => ({ slug: item.slug, name: item.name }));
-    }
-    if (q.inFlight) {
-      data.inFlight[gameKey] = q.inFlight;
-    }
-  }
-  if (Object.keys(data.queues).length > 0 || Object.keys(data.inFlight).length > 0) {
-    localStorage.setItem(LS_QUEUE_KEY, JSON.stringify(data));
-  } else {
-    localStorage.removeItem(LS_QUEUE_KEY);
-  }
+  // Queue state is not persisted to storage
 }
 
 function loadQueuesFromStorage() {
-  const raw = localStorage.getItem(LS_QUEUE_KEY);
-  if (!raw) return;
-  try {
-    const data = JSON.parse(raw);
-    const queues = data.queues || {};
-    const inFlight = data.inFlight || {};
-
-    // Restore queue items
-    for (const [gameKey, items] of Object.entries(queues)) {
-      const q = getGameQueue(gameKey);
-      q.queue = items.map(item => ({ slug: item.slug, name: item.name, row: null }));
-    }
-
-    // Restore in-flight items to the front of their queues (they were interrupted by reload)
-    for (const [gameKey, inFlightItem] of Object.entries(inFlight)) {
-      const q = getGameQueue(gameKey);
-      q.queue.unshift({ slug: inFlightItem.slug, name: inFlightItem.name, row: null });
-    }
-
-    // Clear storage to start fresh
-    localStorage.removeItem(LS_QUEUE_KEY);
-  } catch {}
+  // Queue state is not persisted to storage
+  return [];
 }
 
 async function processLoadQueue(gameKey) {
@@ -1196,13 +1424,13 @@ async function loadAllStats() {
   if (!sets.length) return;
   loadAllAbort = false;
   const q = getGameQueue(S.game);
-  const queuedSlugs = new Set(q.queue.map(item => item.slug));
+  // Clear existing queue to force refresh all
+  q.queue = [];
+  q.inFlight = null;
+  saveQueuesToStorage();
 
   for (const s of sets) {
     if (loadAllAbort) break;
-    // Skip if already queued or already has stats
-    if (queuedSlugs.has(s.slug) || S.setStats.has(s.slug)) continue;
-
     const row = E.setsOvTbody?.querySelector(`tr[data-slug="${CSS.escape(s.slug)}"]`);
     if (row) queueSetLoad(s.slug, s.name, row, S.game);
   }
@@ -1340,14 +1568,13 @@ async function init() {
   applyAccent(S.game);
   if (window.__updateWalletAccent) window.__updateWalletAccent();
   loadStatsFromStorage();
+  loadProductsFromStorage();
   loadCollectionsFromStorage();
   loadQueuesFromStorage();
   console.log('[init] inventory loaded:', S.inventory.size, 'items');
   console.log('[init] filter btn:', E.filterOwnedBtn);
   updateInventoryUI();
 
-  // Save queues before page unload
-  window.addEventListener('beforeunload', saveQueuesToStorage);
 
   const savedAddr = localStorage.getItem('tcg-wallet-addr');
   if (savedAddr) S.wallet.address = savedAddr;
@@ -1372,12 +1599,19 @@ async function init() {
     if (E.gameDropdownLabel && S.games[S.game]) {
       E.gameDropdownLabel.textContent = S.games[S.game].label;
     }
+    E.cardSearch.placeholder = 'Search all products…';
     renderSetList();
     updateCachePill();
     // Update cache display every minute
     setInterval(updateCachePillDisplay, 60 * 1000);
     // Refresh cache status every 5 minutes
     setInterval(updateCachePill, 5 * 60 * 1000);
+
+    // Restore from URL path (must be after S.games is loaded)
+    await restoreFromUrl();
+
+    // Listen for back/forward navigation
+    window.addEventListener('popstate', restoreFromUrl);
   } catch (err) {
     E.setSkeleton.style.display = 'none';
     const msg = document.createElement('div');
@@ -1468,6 +1702,7 @@ async function renderOwnedProducts() {
         console.warn('[renderOwnedProducts] failed to fetch set', slug, err);
       }
     }
+    saveProductsToStorage();
   }
 
   console.log('[renderOwnedProducts] found', items.length, 'unique items to render');
@@ -1785,6 +2020,7 @@ function invAction(action) {
   if (invCurrentCard && invCurrentGame && invCurrentSlug) {
     const cacheKey = `${invCurrentGame}|${invCurrentSlug}|${invCurrentCard.id}`;
     S.cardCache.set(cacheKey, invCurrentCard);
+    saveProductsToStorage();
   }
 
   E.invStatus.textContent = 'Saved locally. Sync to blockchain →';
