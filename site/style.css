@@ -94,11 +94,11 @@
 
 /* ── Reset ──────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; scroll-behavior: smooth; }
+html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; height: 100%; overflow: hidden; }
 body {
-  min-height: 100dvh; display: flex; flex-direction: column;
+  height: 100dvh; display: flex; flex-direction: column;
   font-family: var(--font-body); font-size: var(--text-sm);
-  color: var(--text); background: var(--bg); overflow-x: hidden;
+  color: var(--text); background: var(--bg); overflow: hidden;
 }
 img { display: block; max-width: 100%; height: auto; }
 button { cursor: pointer; background: none; border: none; font: inherit; color: inherit; }

@@ -32,7 +32,7 @@ function applyAccent(gameKey) {
 
 // ── State ────────────────────────────────────────────────────────────────
 const S = {
-  game: 'swu',
+  game: 'pokemon',
   slug: null,
   games: {},
   allCards: [],
@@ -295,6 +295,8 @@ function switchGame(key) {
   S.visibleCards = [];
   S.query = '';
   S.setQuery = '';
+  S.setStats.clear(); // clear stats when switching games
+  loadStatsFromStorage(); // load stats for new game
   E.cardSearch.value = '';
   E.setSearch.value = '';
 
@@ -324,14 +326,21 @@ function switchGame(key) {
   }
   renderSetList();
   updateCachePill();
+  updateLoadQueueUI();
 }
 
 // ── Set list ──────────────────────────────────────────────────────────────
 function getFilteredSets() {
-  const sets = S.games[S.game]?.sets || [];
+  let sets = S.games[S.game]?.sets || [];
   const q = S.setQuery.toLowerCase().trim();
-  if (!q) return sets;
-  return sets.filter(s => s.name.toLowerCase().includes(q));
+  if (q) sets = sets.filter(s => s.name.toLowerCase().includes(q));
+
+  // Sort by release date, most recent first
+  return sets.sort((a, b) => {
+    const dateA = a.released ? new Date(a.released).getTime() : -1;
+    const dateB = b.released ? new Date(b.released).getTime() : -1;
+    return dateB - dateA;
+  });
 }
 
 function renderSetList() {
@@ -760,22 +769,41 @@ async function updateCachePill() {
 }
 
 async function refreshCacheNow() {
-  if (!API || !S.game || isRefreshingCache) return;
+  if (!API || isRefreshingCache) return;
   isRefreshingCache = true;
   const originalText = E.cachePill.textContent;
-  E.cachePill.textContent = 'Refreshing…';
+  E.cachePill.textContent = 'Refreshing all…';
   E.cachePill.style.opacity = '0.6';
   E.statCache.style.opacity = '0.6';
   try {
-    await fetch(`${API}/api/refresh-cache?game=${encodeURIComponent(S.game)}`);
-    // Wait a moment for the server to complete the refresh
-    await new Promise(r => setTimeout(r, 1500));
+    // Refresh cache for all games
+    for (const gameKey of GAME_ORDER) {
+      if (!S.games[gameKey]) continue;
+      try {
+        await fetch(`${API}/api/refresh-cache?game=${encodeURIComponent(gameKey)}`);
+      } catch (err) {
+        console.warn(`Failed to refresh cache for game ${gameKey}:`, err);
+      }
+    }
+    // Wait for server to complete
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Clear in-memory card cache to force fresh fetch
+    S.cardCache.clear();
+
+    // Update status
     await updateCachePill();
+
     // If a set is currently loaded, reload its card prices
     if (S.slug) {
-      S.allCards = []; // Clear cached cards to force a fresh fetch
+      S.allCards = [];
       const btn = document.querySelector(`.set-item[data-slug="${CSS.escape(S.slug)}"]`);
       await loadSet(S.slug, btn ? btn.dataset.name : S.slug, btn);
+    }
+
+    // If sets overview is open, load all stats
+    if (S.setsView) {
+      await loadAllStats();
     }
   } catch (err) {
     E.cachePill.textContent = originalText;
@@ -788,7 +816,7 @@ async function refreshCacheNow() {
 }
 
 // ── LocalStorage: Set stats cache ─────────────────────────────────────────
-const LS_STATS_KEY = 'tcg-set-stats-v1';
+const LS_STATS_KEY = 'tcg-set-stats-v2';
 const LS_STATS_TTL_MS = 60 * 60 * 1000; // 1 hour (matches server cache)
 
 function loadStatsFromStorage() {
@@ -796,10 +824,15 @@ function loadStatsFromStorage() {
     const raw = localStorage.getItem(LS_STATS_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || !parsed.entries) return;
+    if (!parsed || typeof parsed !== 'object') return;
+
+    // Extract stats for current game
+    const gameStats = parsed[S.game];
+    if (!gameStats || typeof gameStats !== 'object') return;
+
     const now = Date.now();
     let loaded = 0, expired = 0;
-    for (const [slug, rec] of Object.entries(parsed.entries)) {
+    for (const [slug, rec] of Object.entries(gameStats)) {
       if (!rec || typeof rec !== 'object') continue;
       if (now - (rec.cachedAt || 0) > LS_STATS_TTL_MS) { expired++; continue; }
       const { cachedAt, ...stats } = rec;
@@ -807,7 +840,7 @@ function loadStatsFromStorage() {
       loaded++;
     }
     if (expired > 0) saveStatsToStorage(); // rewrite without expired entries
-    if (loaded > 0) console.log(`[ls-stats] loaded ${loaded} cached set stats${expired ? ` (${expired} expired)` : ''}`);
+    if (loaded > 0) console.log(`[ls-stats] loaded ${loaded} cached set stats for ${S.game}${expired ? ` (${expired} expired)` : ''}`);
   } catch (e) {
     console.warn('[ls-stats] load failed', e);
   }
@@ -818,12 +851,21 @@ function saveStatsToStorage() {
   clearTimeout(saveStatsTimer);
   saveStatsTimer = setTimeout(() => {
     try {
+      const raw = localStorage.getItem(LS_STATS_KEY);
+      let data = {};
+      try {
+        if (raw) data = JSON.parse(raw);
+      } catch {}
+
+      // Update only current game's stats, preserve other games
       const entries = {};
       const now = Date.now();
       for (const [slug, stats] of S.setStats.entries()) {
         entries[slug] = { ...stats, cachedAt: stats.cachedAt || now };
       }
-      localStorage.setItem(LS_STATS_KEY, JSON.stringify({ v: 1, entries }));
+      data[S.game] = entries;
+
+      localStorage.setItem(LS_STATS_KEY, JSON.stringify(data));
     } catch (e) {
       console.warn('[ls-stats] save failed', e);
     }
@@ -906,6 +948,34 @@ function exitSetsView(restoreState = true) {
   }
 }
 
+function markQueuedRows(gameKey) {
+  // Mark rows that are in the queue with spinners and restore row references
+  const q = getGameQueue(gameKey);
+  const queuedSlugs = new Set(q.queue.map(item => item.slug));
+
+  E.setsOvTbody.querySelectorAll('tr[data-slug]').forEach(row => {
+    if (queuedSlugs.has(row.dataset.slug)) {
+      // Restore row reference for queued item
+      const item = q.queue.find(i => i.slug === row.dataset.slug);
+      if (item) item.row = row;
+
+      const cells = row.querySelectorAll('td');
+      if (cells.length >= 7) {
+        cells[2].innerHTML = '<span class="sov-spinner"></span>';
+        cells[3].innerHTML = '<span class="sov-spinner"></span>';
+        cells[4].innerHTML = '<span class="sov-spinner"></span>';
+        cells[5].innerHTML = '<span class="sov-spinner"></span>';
+        cells[6].innerHTML = '';
+      }
+    }
+  });
+
+  // Resume processing for this game if queue has items
+  if (q.queue.length > 0 && !q.processing) {
+    processLoadQueue(gameKey);
+  }
+}
+
 function renderSetsOverview() {
   const game   = S.games[S.game];
   const sets   = game?.sets || [];
@@ -942,6 +1012,10 @@ function renderSetsOverview() {
     }
     E.setsOvTbody.appendChild(frag);
     if (i < sets.length) requestAnimationFrame(renderChunk);
+    else {
+      // After all chunks are rendered, mark queued rows
+      markQueuedRows(S.game);
+    }
   }
   renderChunk();
 }
@@ -986,23 +1060,120 @@ async function loadSetStatsRow(slug, name, row, force = false) {
   }
 }
 
-let loadAllAbort = false;
+// ── Load Queue (throttle scraper requests) ────────────────────────────────
+// Per-game queue: { gameKey: { queue: [], processing: false } }
+const loadQueues = {};
+let loadAllAbort = false; // only applies to current game's "Load All Stats"
+
+const LS_QUEUE_KEY = 'tcg-load-queue-v1';
+
+function getGameQueue(gameKey) {
+  if (!loadQueues[gameKey]) {
+    loadQueues[gameKey] = { queue: [], processing: false };
+  }
+  return loadQueues[gameKey];
+}
+
+function saveQueuesToStorage() {
+  // Save only slug/name/game (no DOM refs)
+  const data = {};
+  for (const [gameKey, q] of Object.entries(loadQueues)) {
+    if (q.queue.length > 0) {
+      data[gameKey] = q.queue.map(item => ({ slug: item.slug, name: item.name }));
+    }
+  }
+  if (Object.keys(data).length > 0) {
+    localStorage.setItem(LS_QUEUE_KEY, JSON.stringify(data));
+  } else {
+    localStorage.removeItem(LS_QUEUE_KEY);
+  }
+}
+
+function loadQueuesFromStorage() {
+  const raw = localStorage.getItem(LS_QUEUE_KEY);
+  if (!raw) return;
+  try {
+    const data = JSON.parse(raw);
+    for (const [gameKey, items] of Object.entries(data)) {
+      const q = getGameQueue(gameKey);
+      q.queue = items.map(item => ({ slug: item.slug, name: item.name, row: null }));
+    }
+  } catch {}
+}
+
+async function processLoadQueue(gameKey) {
+  const q = getGameQueue(gameKey);
+  if (q.processing) return;
+  q.processing = true;
+
+  while (q.queue.length > 0) {
+    if (loadAllAbort && gameKey === S.game) {
+      q.queue = [];
+      break;
+    }
+    const { slug, name, row } = q.queue.shift();
+    if (row && row.closest('tbody')) {
+      await loadSetStatsRow(slug, name, row, true);
+    }
+    // Save queue state after each completion
+    saveQueuesToStorage();
+    // Throttle: delay between requests to avoid overwhelming scraper
+    if (q.queue.length > 0) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+  q.processing = false;
+  saveQueuesToStorage();
+  // Only update UI if this is the currently viewed game
+  if (gameKey === S.game) {
+    updateLoadQueueUI();
+  }
+}
+
+function queueSetLoad(slug, name, row, gameKey = S.game) {
+  const q = getGameQueue(gameKey);
+  q.queue.push({ slug, name, row });
+  saveQueuesToStorage();
+  // Mark row with spinners if it's visible
+  if (gameKey === S.game && row && row.closest('tbody')) {
+    const cells = row.querySelectorAll('td');
+    if (cells.length >= 7) {
+      cells[2].innerHTML = '<span class="sov-spinner"></span>';
+      cells[3].innerHTML = '<span class="sov-spinner"></span>';
+      cells[4].innerHTML = '<span class="sov-spinner"></span>';
+      cells[5].innerHTML = '<span class="sov-spinner"></span>';
+      cells[6].innerHTML = '';
+    }
+  }
+  // Update UI button
+  if (gameKey === S.game) {
+    updateLoadQueueUI();
+  }
+  processLoadQueue(gameKey);
+}
+
+function updateLoadQueueUI() {
+  if (!E.btnLoadAllStats) return;
+  const q = getGameQueue(S.game);
+  const total = q.queue.length + (q.processing ? 1 : 0);
+  if (total === 0) {
+    E.btnLoadAllStats.disabled = false;
+    E.btnLoadAllStats.textContent = 'Load All Stats';
+  } else {
+    E.btnLoadAllStats.disabled = true;
+    E.btnLoadAllStats.textContent = `Queue: ${total}…`;
+  }
+}
+
 async function loadAllStats() {
   const sets = S.games[S.game]?.sets || [];
   if (!sets.length) return;
   loadAllAbort = false;
-  E.btnLoadAllStats.disabled = true;
-  let done = 0;
   for (const s of sets) {
     if (loadAllAbort) break;
-    E.btnLoadAllStats.textContent = `Loading ${done + 1}/${sets.length}…`;
     const row = E.setsOvTbody?.querySelector(`tr[data-slug="${CSS.escape(s.slug)}"]`);
-    if (row) await loadSetStatsRow(s.slug, s.name, row, true);
-    done++;
-    if (done < sets.length) await new Promise(r => setTimeout(r, 200));
+    if (row) queueSetLoad(s.slug, s.name, row, S.game);
   }
-  E.btnLoadAllStats.disabled = false;
-  E.btnLoadAllStats.textContent = 'Load All Stats';
 }
 
 // ── Inventory Management ──────────────────────────────────────────────────
@@ -1138,9 +1309,13 @@ async function init() {
   if (window.__updateWalletAccent) window.__updateWalletAccent();
   loadStatsFromStorage();
   loadCollectionsFromStorage();
+  loadQueuesFromStorage();
   console.log('[init] inventory loaded:', S.inventory.size, 'items');
   console.log('[init] filter btn:', E.filterOwnedBtn);
   updateInventoryUI();
+
+  // Save queues before page unload
+  window.addEventListener('beforeunload', saveQueuesToStorage);
 
   const savedAddr = localStorage.getItem('tcg-wallet-addr');
   if (savedAddr) S.wallet.address = savedAddr;
@@ -1300,7 +1475,7 @@ E.setsOvTbody.addEventListener('click', (e) => {
   if (!btn) return;
   e.stopPropagation(); // prevent row click from also firing loadSet()
   const row = btn.closest('tr');
-  if (row) loadSetStatsRow(btn.dataset.slug, btn.dataset.name, row);
+  if (row) queueSetLoad(btn.dataset.slug, btn.dataset.name, row);
 });
 
 // ── Cache click handlers ──────────────────────────────────────────────────
@@ -1521,6 +1696,13 @@ function invAction(action) {
     if (row) {
       if (totalQty === 0) {
         row.remove();
+        // Check if collection is now empty; if so, turn off owned view
+        if (S.inventory.size === 0) {
+          S.filterOwned = false;
+          E.filterOwnedBtn.setAttribute('aria-pressed', 'false');
+          E.filterOwnedBtn.classList.remove('active');
+          renderCards();
+        }
       } else {
         const badge = row.querySelector('.qty-badge');
         if (badge) badge.textContent = totalQty;
