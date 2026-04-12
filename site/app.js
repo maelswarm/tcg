@@ -970,7 +970,7 @@ function markQueuedRows(gameKey) {
     }
   });
 
-  // Resume processing for this game if queue has items
+  // Resume processing for this game if queue has items and not already processing
   if (q.queue.length > 0 && !q.processing) {
     processLoadQueue(gameKey);
   }
@@ -1069,20 +1069,23 @@ const LS_QUEUE_KEY = 'tcg-load-queue-v1';
 
 function getGameQueue(gameKey) {
   if (!loadQueues[gameKey]) {
-    loadQueues[gameKey] = { queue: [], processing: false };
+    loadQueues[gameKey] = { queue: [], processing: false, inFlight: null };
   }
   return loadQueues[gameKey];
 }
 
 function saveQueuesToStorage() {
-  // Save only slug/name/game (no DOM refs)
-  const data = {};
+  // Save queue items and any in-flight item (no DOM refs)
+  const data = { queues: {}, inFlight: {} };
   for (const [gameKey, q] of Object.entries(loadQueues)) {
     if (q.queue.length > 0) {
-      data[gameKey] = q.queue.map(item => ({ slug: item.slug, name: item.name }));
+      data.queues[gameKey] = q.queue.map(item => ({ slug: item.slug, name: item.name }));
+    }
+    if (q.inFlight) {
+      data.inFlight[gameKey] = q.inFlight;
     }
   }
-  if (Object.keys(data).length > 0) {
+  if (Object.keys(data.queues).length > 0 || Object.keys(data.inFlight).length > 0) {
     localStorage.setItem(LS_QUEUE_KEY, JSON.stringify(data));
   } else {
     localStorage.removeItem(LS_QUEUE_KEY);
@@ -1094,10 +1097,23 @@ function loadQueuesFromStorage() {
   if (!raw) return;
   try {
     const data = JSON.parse(raw);
-    for (const [gameKey, items] of Object.entries(data)) {
+    const queues = data.queues || {};
+    const inFlight = data.inFlight || {};
+
+    // Restore queue items
+    for (const [gameKey, items] of Object.entries(queues)) {
       const q = getGameQueue(gameKey);
       q.queue = items.map(item => ({ slug: item.slug, name: item.name, row: null }));
     }
+
+    // Restore in-flight items to the front of their queues (they were interrupted by reload)
+    for (const [gameKey, inFlightItem] of Object.entries(inFlight)) {
+      const q = getGameQueue(gameKey);
+      q.queue.unshift({ slug: inFlightItem.slug, name: inFlightItem.name, row: null });
+    }
+
+    // Clear storage to start fresh
+    localStorage.removeItem(LS_QUEUE_KEY);
   } catch {}
 }
 
@@ -1111,12 +1127,22 @@ async function processLoadQueue(gameKey) {
       q.queue = [];
       break;
     }
-    const { slug, name, row } = q.queue.shift();
+    const item = q.queue[0]; // peek, don't shift yet
+    const { slug, name, row } = item;
+
+    // Mark as in-flight before processing (in case of reload)
+    q.inFlight = { slug, name };
+    saveQueuesToStorage();
+
     if (row && row.closest('tbody')) {
       await loadSetStatsRow(slug, name, row, true);
     }
-    // Save queue state after each completion
+
+    // Remove from queue and in-flight after successful processing
+    q.queue.shift();
+    q.inFlight = null;
     saveQueuesToStorage();
+
     // Throttle: delay between requests to avoid overwhelming scraper
     if (q.queue.length > 0) {
       await new Promise(r => setTimeout(r, 200));
@@ -1169,8 +1195,14 @@ async function loadAllStats() {
   const sets = S.games[S.game]?.sets || [];
   if (!sets.length) return;
   loadAllAbort = false;
+  const q = getGameQueue(S.game);
+  const queuedSlugs = new Set(q.queue.map(item => item.slug));
+
   for (const s of sets) {
     if (loadAllAbort) break;
+    // Skip if already queued or already has stats
+    if (queuedSlugs.has(s.slug) || S.setStats.has(s.slug)) continue;
+
     const row = E.setsOvTbody?.querySelector(`tr[data-slug="${CSS.escape(s.slug)}"]`);
     if (row) queueSetLoad(s.slug, s.name, row, S.game);
   }
