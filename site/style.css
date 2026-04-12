@@ -180,11 +180,21 @@ appkit-button::part(button) {
   position: sticky; top: var(--header-h); z-index: 190;
   height: var(--gamebar-h); background: var(--surf2);
   border-bottom: 1px solid var(--divider); flex-shrink: 0;
-  overflow: hidden;
 }
-.game-bar-inner { height: 100%; padding: 0 var(--sp4); overflow-x: auto; scrollbar-width: none; }
-.game-bar-inner::-webkit-scrollbar { display: none; }
-.game-tabs { display: flex; align-items: center; height: 100%; gap: var(--sp1); white-space: nowrap; }
+.game-bar-inner {
+  width: 100%;
+  height: 100%;
+  padding: 0 var(--sp4);
+  overflow-x: auto;
+  overflow-y: hidden;
+  display: flex;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.game-bar-inner::-webkit-scrollbar { height: 3px; }
+.game-bar-inner::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.game-tabs { display: flex; align-items: center; height: 100%; gap: var(--sp1); white-space: nowrap; flex-shrink: 0; min-width: min-content; }
 .game-tab {
   display: inline-flex; align-items: center; gap: var(--sp2);
   padding: var(--sp1) var(--sp3);
@@ -631,8 +641,14 @@ appkit-button::part(button) {
   .card-search { width: 160px; }
   .game-tab { font-size: 11px; padding: var(--sp1) var(--sp2); }
 }
-@media (max-width: 640px) {
-  :root { --sidebar-w: 0px; --header-h: 52px; --gamebar-h: 0px; }
+@media (max-width: 1320px) {
+  .game-bar { display: flex; }
+  .game-dropdown { display: none; }
+  .game-bar-inner { padding: 0 var(--sp2); }
+}
+
+@media (max-width: 768px) {
+  :root { --sidebar-w: 0px; --header-h: 52px; --gamebar-h: 44px; }
   .hamburger {
     display: flex;
     background: var(--game-accent-dim);
@@ -643,8 +659,6 @@ appkit-button::part(button) {
     background: color-mix(in srgb, var(--game-accent) 25%, transparent);
   }
   .logo svg { display: none; }
-  .game-bar { display: none; }
-  .game-dropdown { display: block; }
   .sidebar {
     position: fixed; left: 0;
     top: calc(var(--header-h) + var(--gamebar-h)); bottom: 0;
@@ -663,7 +677,6 @@ appkit-button::part(button) {
   .th-price { width: 72px; }
   .set-item { padding: var(--sp3) var(--sp4); min-height: 44px; display: flex; align-items: center; }
   .game-tab { min-height: 40px; padding: 0 var(--sp3); }
-  .game-bar-inner { padding: 0 var(--sp2); }
   .theme-toggle { min-width: 44px; min-height: 44px; }
 }
 @media (max-width: 480px) {

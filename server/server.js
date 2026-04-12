@@ -6567,20 +6567,14 @@ async function scrapeSetsFromCategory(gameKey) {
       if (!seen.has(slug)) seen.set(slug, name);
     }
     const sets = [...seen.entries()].map(([slug, name]) => ({ name, slug }));
-    if (sets.length > 0) {
-      console.log(`[cache] Refreshed ${gameKey}: ${sets.length} sets`);
-      return sets;
-    }
+    if (sets.length > 0) return sets;
   } catch (e) {
-    console.error(`[cache] Error refreshing ${gameKey}: ${e.message}`);
   }
   // Fall back to bundled data
   return gd.sets || [];
 }
 
-// ── Initialize + schedule hourly refresh for all games ────────────────────
 async function initSetsCache() {
-  console.log('[cache] Initial set load...');
   for (const gameKey of Object.keys(GAME_DATA)) {
     try {
       const sets = await scrapeSetsFromCategory(gameKey);
@@ -6588,25 +6582,21 @@ async function initSetsCache() {
     } catch (e) {
       setsCache[gameKey] = { sets: GAME_DATA[gameKey]?.sets || [], fetchedAt: Date.now() };
     }
-    await new Promise(r => setTimeout(r, 400)); // gentle rate limiting
+    await new Promise(r => setTimeout(r, 400));
   }
-  console.log('[cache] Initial load complete.');
   scheduleHourlyRefresh();
 }
 
 function scheduleHourlyRefresh() {
   setInterval(async () => {
-    console.log('[cache] Hourly refresh started...');
     for (const gameKey of Object.keys(GAME_DATA)) {
       try {
         const sets = await scrapeSetsFromCategory(gameKey);
         setsCache[gameKey] = { sets, fetchedAt: Date.now() };
       } catch (e) {
-        console.error(`[cache] Refresh error ${gameKey}: ${e.message}`);
       }
       await new Promise(r => setTimeout(r, 400));
     }
-    console.log('[cache] Hourly refresh complete.');
   }, CACHE_TTL_MS);
 }
 
@@ -6684,13 +6674,7 @@ async function fetchSetPages(slug) {
   // Check card cache
   const cached = cardCache.get(slug);
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-    console.log(`[card-cache] HIT ${slug} (${cached.data.count} items)`);
     return { ...cached.data, fromCache: true, cachedAt: cached.fetchedAt };
-  }
-
-  if (cached) {
-    const ageSeconds = Math.round((Date.now() - cached.fetchedAt) / 1000);
-    console.log(`[card-cache] EXPIRED ${slug} (age: ${ageSeconds}s) — re-fetching...`);
   }
 
   const baseUrl = `https://www.pricecharting.com/console/${slug}`;
@@ -6699,7 +6683,6 @@ async function fetchSetPages(slug) {
   try {
     html1 = await httpGet(baseUrl);
   } catch (err) {
-    console.error(`[card-fetch] FAIL ${slug} — page 1 threw: ${err.message}`);
     return { error: err.message, cards: [], count: 0 };
   }
 
@@ -6707,46 +6690,33 @@ async function fetchSetPages(slug) {
   const title = titleMatch ? htmlDecode(titleMatch[1].replace(/<[^>]+>/g, '').trim()) : slug;
   const page1Cards = parseRows(html1);
   allCards.push(...page1Cards);
-  console.log(`[card-fetch] PAGE 1 ${slug}: ${page1Cards.length} cards`);
 
   let nextData = parseNextCursor(html1);
-  console.log(`[card-fetch] PAGE 1 cursor: ${nextData ? 'found' : 'NOT FOUND'}`);
 
   let page = 2;
   while (nextData) {
     try {
-      console.log(`[card-fetch] Fetching PAGE ${page} ${slug}...`);
       const pageHtml = await httpPost(baseUrl, {
         sort: nextData.sort || '',
         when: nextData.when || 'none',
         'release-date': nextData['release-date'] || '',
         cursor: nextData.cursor,
       });
-      console.log(`[card-fetch] PAGE ${page} HTML length: ${pageHtml.length} bytes`);
 
       const newCards = parseRows(pageHtml);
-      console.log(`[card-fetch] PAGE ${page} ${slug}: ${newCards.length} cards`);
 
       if (newCards.length === 0) {
-        console.log(`[card-fetch] PAGE ${page} returned 0 cards - BREAKING`);
         break;
       }
 
       allCards.push(...newCards);
       nextData = parseNextCursor(pageHtml);
-      console.log(`[card-fetch] PAGE ${page} cursor: ${nextData ? 'found' : 'NOT FOUND - WILL BREAK'}`);
 
       page++;
-      // Throttle between pagination requests
       await new Promise(r => setTimeout(r, 500));
     } catch (err) {
-      console.error(`[card-fetch] FAIL ${slug} — page ${page} threw: ${err.message}`);
       break;
     }
-  }
-
-  if (allCards.length === 0) {
-    console.error(`[card-fetch] EMPTY ${slug} — 0 cards parsed after ${page - 1} page(s) — url: ${baseUrl}`);
   }
 
   const sealedItems = allCards.filter(c => c.sealed);
@@ -6754,7 +6724,6 @@ async function fetchSetPages(slug) {
   if (allCards.length > 0) {
     cardCache.set(slug, { data: result, fetchedAt: Date.now() });
   }
-  console.log(`[card-cache] FETCHED ${slug} (${allCards.length} items, ${sealedItems.length} sealed, ${page-1} pages)`);
   return result;
 }
 
@@ -6792,7 +6761,6 @@ const server = http.createServer(async (req, res) => {
     if (!slug) { res.writeHead(400); res.end(JSON.stringify({ error: 'slug required' })); return; }
     if (query.force === 'true') {
       cardCache.delete(slug);
-      console.log(`[card-cache] BUSTED ${slug}`);
     }
     try {
       const data = await fetchSetPages(slug);
@@ -6838,9 +6806,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const sets = await scrapeSetsFromCategory(gameKey);
         setsCache[gameKey] = { sets, fetchedAt: Date.now() };
-        console.log(`[cache] Refreshed ${gameKey}: ${sets.length} sets`);
       } catch (e) {
-        console.error(`[cache] Refresh error for ${gameKey}: ${e.message}`);
       }
     })();
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -6871,8 +6837,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, async () => {
-  console.log(`TCG Price Index running on http://localhost:${PORT}`);
-  console.log(`Games: ${Object.keys(GAME_DATA).join(', ')}`);
-  // Start cache init in background (don't block server startup)
-  initSetsCache().catch(e => console.error('[cache] Init error:', e));
+  initSetsCache().catch(() => {});
 });

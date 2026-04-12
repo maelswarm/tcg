@@ -57,6 +57,8 @@ const S = {
 // ── DOM ───────────────────────────────────────────────────────────────────
 const g = id => document.getElementById(id);
 const E = {
+  gameBar:       document.querySelector('.game-bar'),
+  gameBarInner:  document.querySelector('.game-bar-inner'),
   gameTabs:      g('game-tabs'),
   setList:       g('set-list'),
   setSkeleton:   g('set-skeleton'),
@@ -994,7 +996,6 @@ async function refreshCacheNow() {
       try {
         await fetch(`${API}/api/refresh-cache?game=${encodeURIComponent(gameKey)}`);
       } catch (err) {
-        console.warn(`Failed to refresh cache for game ${gameKey}:`, err);
       }
     }
     // Wait for server to complete
@@ -1019,7 +1020,6 @@ async function refreshCacheNow() {
     }
   } catch (err) {
     E.cachePill.textContent = originalText;
-    console.error('Failed to refresh cache:', err);
   } finally {
     E.cachePill.style.opacity = '1';
     E.statCache.style.opacity = '1';
@@ -1054,9 +1054,7 @@ function loadStatsFromStorage() {
       loaded++;
     }
     if (expired > 0) saveStatsToStorage(); // rewrite without expired entries
-    if (loaded > 0) console.log(`[ls-stats] loaded ${loaded} cached set stats for ${S.game}${expired ? ` (${expired} expired)` : ''}`);
   } catch (e) {
-    console.warn('[ls-stats] load failed', e);
   }
 }
 
@@ -1081,12 +1079,10 @@ function saveStatsToStorage() {
 
       localStorage.setItem(LS_STATS_KEY, JSON.stringify(data));
     } catch (e) {
-      console.warn('[ls-stats] save failed', e);
     }
   }, 300);
 }
 
-// ── Product Cache Storage ──────────────────────────────────────────────────
 function loadProductsFromStorage() {
   try {
     const raw = localStorage.getItem(LS_PRODUCTS_KEY);
@@ -1103,9 +1099,7 @@ function loadProductsFromStorage() {
       loaded++;
     }
     if (expired > 0) saveProductsToStorage(); // rewrite without expired entries
-    if (loaded > 0) console.log(`[ls-products] loaded ${loaded} cached products${expired ? ` (${expired} expired)` : ''}`);
   } catch (e) {
-    console.warn('[ls-products] load failed', e);
   }
 }
 
@@ -1121,7 +1115,6 @@ function saveProductsToStorage() {
       }
       localStorage.setItem(LS_PRODUCTS_KEY, JSON.stringify(entries));
     } catch (e) {
-      console.warn('[ls-products] save failed', e);
     }
   }, 500);
 }
@@ -1470,7 +1463,7 @@ function loadCollectionsFromStorage() {
         if (col) { S.activeCollectionId = col.id; S.inventory = col.items; }
       } catch {}
     }
-  } catch (err) { console.warn('[collections] load from storage failed', err); }
+  } catch (err) {}
   ensureDefaultCollection();
 }
 
@@ -1503,7 +1496,6 @@ async function syncInventoryToContract() {
     saveCollectionsToStorage();
     E.btnSyncInv.textContent = toSync.length > 0 ? 'Synced!' : 'Up to date';
   } catch (err) {
-    console.error('[inventory] sync failed', err);
     E.btnSyncInv.textContent = 'Sync failed';
   } finally {
     E.btnSyncInv?.classList.remove('syncing');
@@ -1521,7 +1513,7 @@ function saveCollectionsToStorage() {
       active: S.activeCollectionId
     }));
     localStorage.setItem('tcg-inventory-synced', JSON.stringify([...S.inventorySynced]));
-  } catch (err) { console.warn('[collections] save to storage failed', err); }
+  } catch (err) {}
 }
 
 function updateInventoryUI() {
@@ -1563,7 +1555,6 @@ window.__walletStateChange = function({ address, isConnected }) {
   updateInventoryUI();
 };
 
-// ── Init ──────────────────────────────────────────────────────────────────
 async function init() {
   applyAccent(S.game);
   if (window.__updateWalletAccent) window.__updateWalletAccent();
@@ -1571,8 +1562,6 @@ async function init() {
   loadProductsFromStorage();
   loadCollectionsFromStorage();
   loadQueuesFromStorage();
-  console.log('[init] inventory loaded:', S.inventory.size, 'items');
-  console.log('[init] filter btn:', E.filterOwnedBtn);
   updateInventoryUI();
 
 
@@ -1621,20 +1610,7 @@ async function init() {
   }
 }
 
-// ── Render Owned Products Table ──────────────────────────────────────────
 async function renderOwnedProducts() {
-  console.log('[renderOwnedProducts] starting, inventory size:', S.inventory.size);
-  console.log('[renderOwnedProducts] cardCache size:', S.cardCache.size);
-
-  // Debug: log inventory contents
-  if (S.inventory.size > 0) {
-    const invEntries = Array.from(S.inventory.entries());
-    console.log('[renderOwnedProducts] inventory entries:', invEntries);
-    invEntries.slice(0, 3).forEach(([key, qty]) => {
-      const parts = key.split('|');
-      console.log(`  key: "${key}" → parts: [${parts.join(', ')}] qty: ${qty}`);
-    });
-  }
 
   const items = [];
   const setsToFetch = new Set();
@@ -1663,12 +1639,8 @@ async function renderOwnedProducts() {
     }
 
     const entry = items.find(i => i.cardKey === cardKey);
-    const gradingNum = parseInt(grading) || 0; // Default to 0 (ungraded) if grading is missing
-    if (isNaN(gradingNum)) {
-      console.warn(`[renderOwnedProducts] invalid grading: "${grading}" for key "${key}", defaulting to 0`);
-    }
+    const gradingNum = parseInt(grading) || 0;
     entry.qty[gradingNum] = qty;
-    console.log(`[renderOwnedProducts] set item qty: cardKey=${cardKey}, grading=${grading} (${gradingNum}), qty=${qty}`);
 
     // Check if this card is in cache; if not, mark set for fetching
     if (!S.cardCache.has(cardKey)) {
@@ -1676,9 +1648,7 @@ async function renderOwnedProducts() {
     }
   }
 
-  // Fetch any missing sets
   if (setsToFetch.size > 0) {
-    console.log('[renderOwnedProducts] fetching', setsToFetch.size, 'sets');
     if (E.loadingLabel) E.loadingLabel.textContent = 'Loading collection…';
     showState('loading');
     for (const slug of setsToFetch) {
@@ -1699,13 +1669,10 @@ async function renderOwnedProducts() {
           }
         }
       } catch (err) {
-        console.warn('[renderOwnedProducts] failed to fetch set', slug, err);
       }
     }
     saveProductsToStorage();
   }
-
-  console.log('[renderOwnedProducts] found', items.length, 'unique items to render');
 
   // Ensure all cards are loaded before rendering (validate table is fully loaded)
   const missingCards = [];
@@ -1716,7 +1683,6 @@ async function renderOwnedProducts() {
     }
   }
   if (missingCards.length > 0) {
-    console.warn('[renderOwnedProducts] some cards still missing from cache:', missingCards);
   }
 
   let html = '';
@@ -1728,10 +1694,7 @@ async function renderOwnedProducts() {
   items.forEach((item) => {
     const cacheKey = `${item.game}|${item.slug}|${item.cardId}`;
     const card = S.cardCache.get(cacheKey);
-    if (!card) {
-      console.log('[renderOwnedProducts] card still not in cache:', cacheKey);
-      return;
-    }
+    if (!card) return;
 
     const thumb = card.thumb || card.image || '';
     const imgHtml = thumb ? `<img class="card-thumb" src="${escA(thumb)}" alt="${escA(card.name)}" style="cursor:pointer">` : '';
@@ -1743,8 +1706,6 @@ async function renderOwnedProducts() {
     const ungradedPrice = (card.ungraded === '—' || !card.ungraded) ? 0 : (typeof card.ungraded === 'number' ? card.ungraded : (parsePrice(card.ungraded) || 0));
     const grade9Price = (card.grade9 === '—' || !card.grade9) ? 0 : (typeof card.grade9 === 'number' ? card.grade9 : (parsePrice(card.grade9) || 0));
     const psa10Price = (card.psa10 === '—' || !card.psa10) ? 0 : (typeof card.psa10 === 'number' ? card.psa10 : (parsePrice(card.psa10) || 0));
-
-    console.log(`[renderOwnedProducts] card: ${card.name}, ungraded=${card.ungraded} (${ungradedPrice}), grade9=${card.grade9} (${grade9Price}), psa10=${card.psa10} (${psa10Price}), qty=[${item.qty[0]},${item.qty[9]},${item.qty[10]}]`);
 
     totals[0].qty += item.qty[0];
     totals[0].value += item.qty[0] * ungradedPrice;
@@ -1818,7 +1779,19 @@ E.setsOvTbody.addEventListener('click', (e) => {
 E.cachePill.addEventListener('click', refreshCacheNow);
 E.statCache.addEventListener('click', refreshCacheNow);
 
-// ── Collection controls ───────────────────────────────────────────────────
+if (E.gameBar) {
+  E.gameBar.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    E.gameBarInner.scrollLeft += e.deltaY > 0 ? 50 : -50;
+  }, { passive: false, capture: true });
+}
+
+document.addEventListener('wheel', (e) => {
+  if (E.gameBar.contains(e.target)) {
+    e.preventDefault();
+    E.gameBarInner.scrollLeft += e.deltaY > 0 ? 50 : -50;
+  }
+}, { passive: false, capture: true });
 E.collectionSelect?.addEventListener('change', () => switchCollection(E.collectionSelect.value));
 
 E.btnCollectionAdd?.addEventListener('click', () => {
@@ -1839,7 +1812,6 @@ E.collectionNameInput?.addEventListener('blur', () =>
 
 init();
 
-// ── Sidebar toggle (mobile) ───────────────────────────────────────────────
 function isMobile() { return window.innerWidth < 640; }
 
 function openSidebar() {
