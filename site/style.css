@@ -1060,3 +1060,23 @@ appkit-button::part(button) {
 .btn-icon:hover { background: var(--surf3); }
 .btn-icon-danger:hover { background: rgba(248,113,113,0.15); color: #f87171; border-color: #f87171; }
 .btn-icon:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
+
+/* ── Owned Products Table ──────────────────────────────────── */
+.owned-row {
+  border-bottom: 1px solid var(--divider);
+  transition: background 0.08s;
+}
+.owned-row:hover {
+  background: rgba(var(--game-accent-rgb), 0.04);
+}
+.owned-row-total {
+  border-top: 2px solid var(--game-accent);
+  border-bottom: none;
+  background: rgba(var(--game-accent-rgb), 0.06);
+  font-weight: 500;
+}
+.owned-row-total .td-price {
+  text-align: right;
+  padding-top: var(--sp3);
+  padding-bottom: var(--sp3);
+}

@@ -1392,6 +1392,16 @@ async function renderOwnedProducts() {
   console.log('[renderOwnedProducts] starting, inventory size:', S.inventory.size);
   console.log('[renderOwnedProducts] cardCache size:', S.cardCache.size);
 
+  // Debug: log inventory contents
+  if (S.inventory.size > 0) {
+    const invEntries = Array.from(S.inventory.entries());
+    console.log('[renderOwnedProducts] inventory entries:', invEntries);
+    invEntries.slice(0, 3).forEach(([key, qty]) => {
+      const parts = key.split('|');
+      console.log(`  key: "${key}" → parts: [${parts.join(', ')}] qty: ${qty}`);
+    });
+  }
+
   const items = [];
   const setsToFetch = new Set();
 
@@ -1419,7 +1429,12 @@ async function renderOwnedProducts() {
     }
 
     const entry = items.find(i => i.cardKey === cardKey);
-    entry.qty[parseInt(grading)] = qty;
+    const gradingNum = parseInt(grading) || 0; // Default to 0 (ungraded) if grading is missing
+    if (isNaN(gradingNum)) {
+      console.warn(`[renderOwnedProducts] invalid grading: "${grading}" for key "${key}", defaulting to 0`);
+    }
+    entry.qty[gradingNum] = qty;
+    console.log(`[renderOwnedProducts] set item qty: cardKey=${cardKey}, grading=${grading} (${gradingNum}), qty=${qty}`);
 
     // Check if this card is in cache; if not, mark set for fetching
     if (!S.cardCache.has(cardKey)) {
@@ -1436,12 +1451,17 @@ async function renderOwnedProducts() {
       try {
         const d = await fetchSet(slug);
         if (d.cards && d.cards.length) {
+          // Find all games that have items from this slug
+          const gamesForSlug = new Set();
+          for (const item of items) {
+            if (item.slug === slug) gamesForSlug.add(item.game);
+          }
+          // Cache cards for each game that needs them
           for (const card of d.cards) {
-            // Find the game from items using this slug
-            const item = items.find(i => i.slug === slug);
-            const game = item?.game || S.game;
-            const cacheKey = `${game}|${slug}|${card.id}`;
-            S.cardCache.set(cacheKey, card);
+            for (const game of gamesForSlug) {
+              const cacheKey = `${game}|${slug}|${card.id}`;
+              S.cardCache.set(cacheKey, card);
+            }
           }
         }
       } catch (err) {
@@ -1451,8 +1471,25 @@ async function renderOwnedProducts() {
   }
 
   console.log('[renderOwnedProducts] found', items.length, 'unique items to render');
+
+  // Ensure all cards are loaded before rendering (validate table is fully loaded)
+  const missingCards = [];
+  for (const item of items) {
+    const cacheKey = `${item.game}|${item.slug}|${item.cardId}`;
+    if (!S.cardCache.has(cacheKey)) {
+      missingCards.push(cacheKey);
+    }
+  }
+  if (missingCards.length > 0) {
+    console.warn('[renderOwnedProducts] some cards still missing from cache:', missingCards);
+  }
+
   let html = '';
   let rowIdx = 1;
+
+  // Track totals by grading level
+  const totals = { 0: { qty: 0, value: 0 }, 9: { qty: 0, value: 0 }, 10: { qty: 0, value: 0 } };
+
   items.forEach((item) => {
     const cacheKey = `${item.game}|${item.slug}|${item.cardId}`;
     const card = S.cardCache.get(cacheKey);
@@ -1465,6 +1502,21 @@ async function renderOwnedProducts() {
     const imgHtml = thumb ? `<img class="card-thumb" src="${escA(thumb)}" alt="${escA(card.name)}" style="cursor:pointer">` : '';
     const total = item.qty[0] + item.qty[9] + item.qty[10];
     const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
+
+    // Calculate totals (handle both string prices and raw numbers)
+    // Skip em-dash '—' which means price not available on PriceCharting
+    const ungradedPrice = (card.ungraded === '—' || !card.ungraded) ? 0 : (typeof card.ungraded === 'number' ? card.ungraded : (parsePrice(card.ungraded) || 0));
+    const grade9Price = (card.grade9 === '—' || !card.grade9) ? 0 : (typeof card.grade9 === 'number' ? card.grade9 : (parsePrice(card.grade9) || 0));
+    const psa10Price = (card.psa10 === '—' || !card.psa10) ? 0 : (typeof card.psa10 === 'number' ? card.psa10 : (parsePrice(card.psa10) || 0));
+
+    console.log(`[renderOwnedProducts] card: ${card.name}, ungraded=${card.ungraded} (${ungradedPrice}), grade9=${card.grade9} (${grade9Price}), psa10=${card.psa10} (${psa10Price}), qty=[${item.qty[0]},${item.qty[9]},${item.qty[10]}]`);
+
+    totals[0].qty += item.qty[0];
+    totals[0].value += item.qty[0] * ungradedPrice;
+    totals[9].qty += item.qty[9];
+    totals[9].value += item.qty[9] * grade9Price;
+    totals[10].qty += item.qty[10];
+    totals[10].value += item.qty[10] * psa10Price;
 
     html += `
       <tr class="owned-row">
@@ -1481,6 +1533,23 @@ async function renderOwnedProducts() {
     `;
     rowIdx++;
   });
+
+  // Add totals row
+  if (items.length > 0) {
+    html += `
+      <tr class="owned-row-total">
+        <td class="td-num">Total</td>
+        <td class="td-img"></td>
+        <td class="td-name"></td>
+        <td class="td-name"></td>
+        <td class="td-name"></td>
+        <td class="td-price"><strong>${fmt(totals[0].value)}</strong><br><span style="font-size:var(--text-xs);color:var(--muted)">${totals[0].qty} items</span></td>
+        <td class="td-price"><strong>${fmt(totals[9].value)}</strong><br><span style="font-size:var(--text-xs);color:var(--muted)">${totals[9].qty} items</span></td>
+        <td class="td-price"><strong>${fmt(totals[10].value)}</strong><br><span style="font-size:var(--text-xs);color:var(--muted)">${totals[10].qty} items</span></td>
+        <td class="td-action"></td>
+      </tr>
+    `;
+  }
 
   E.ownedProductsTbody.innerHTML = html;
   updateCollectionControls();
@@ -1721,24 +1790,17 @@ function invAction(action) {
   E.invStatus.textContent = 'Saved locally. Sync to blockchain →';
   refreshInvQtyRows();
 
-  // Update owned products table if visible
+  // Update owned products table if visible (rebuild entire table to keep totals accurate)
   if (S.filterOwned) {
-    const totalQty = [0, 9, 10].reduce((sum, g) => sum + (S.inventory.get(invKey(invCurrentGame, invCurrentSlug, invCurrentCard.id, g)) || 0), 0);
-    const row = E.ownedProductsTbody.querySelector(`button[data-card-id="${escA(invCurrentCard.id)}"][data-game="${escA(invCurrentGame)}"][data-slug="${escA(invCurrentSlug)}"]`)?.closest('tr');
-    if (row) {
-      if (totalQty === 0) {
-        row.remove();
-        // Check if collection is now empty; if so, turn off owned view
-        if (S.inventory.size === 0) {
-          S.filterOwned = false;
-          E.filterOwnedBtn.setAttribute('aria-pressed', 'false');
-          E.filterOwnedBtn.classList.remove('active');
-          renderCards();
-        }
-      } else {
-        const badge = row.querySelector('.qty-badge');
-        if (badge) badge.textContent = totalQty;
-      }
+    // Check if collection is now empty; if so, turn off owned view
+    if (S.inventory.size === 0) {
+      S.filterOwned = false;
+      E.filterOwnedBtn.setAttribute('aria-pressed', 'false');
+      E.filterOwnedBtn.classList.remove('active');
+      renderCards();
+    } else {
+      // Rebuild owned products table with updated totals
+      renderOwnedProducts();
     }
   }
 
