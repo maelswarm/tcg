@@ -44,14 +44,16 @@ const S = {
   cacheAgeSeconds: 0,
   cacheSets: 0,
   setsView: false,
-  setStats: new Map(), // slug → { count, avgUngraded, topUngraded, topPsa10 }
-  cardCache: new Map(), // `${game}|${slug}|${cardId}` → card object
-  wallet: { connected: false, address: null },
-  collections: [],          // Array of { id, name, items: Map<string, number> }
-  activeCollectionId: null,
-  inventory: new Map(),     // always points to active collection's items Map
-  inventorySynced: new Set(), // items synced to contract
-  filterOwned: false,
+  saleView: false,
+  saleCards: [],
+  setStats: new Map(),
+  cardCache: new Map(),
+  userId: null,
+  authToken: null,
+  isAdmin: false,
+  cart: new Map(),
+  storeInventory: new Map(), // `${game}|${slug}|${cardId}|${grading}` → {quantity_available, price_cents}
+  adminInventory: [],
 };
 
 // ── DOM ───────────────────────────────────────────────────────────────────
@@ -65,6 +67,7 @@ const E = {
   setBadge:      g('set-badge'),
   setSearch:     g('set-search'),
   setTitle:      g('set-title'),
+  sidebarTitle:  g('sidebar-title'),
   setExtLink:    g('set-ext-link'),
   statsBar:      g('stats-bar'),
   statCount:     g('stat-count'),
@@ -95,12 +98,18 @@ const E = {
   imgModalClose: g('img-modal-close'),
   imgModalBackdrop: g('img-modal-backdrop'),
   btnViewSets:   g('btn-view-sets'),
+  btnViewSale:   g('btn-view-sale'),
   stateSetsView: g('state-sets-view'),
+  stateSaleView: g('state-sale-view'),
+  stateInventoryView: g('state-inventory-view'),
   setsOvTitle:   g('sets-ov-title'),
   btnLoadAllStats: g('btn-load-all-stats'),
   setsOvTbody:   g('sets-ov-tbody'),
-  stateOwnedView: g('state-owned-view'),
-  ownedProductsTbody: g('owned-products-tbody'),
+  saleTitle:     g('sale-title'),
+  saleSearch:    g('sale-search'),
+  saleTbody:     g('sale-tbody'),
+  inventoryTitle: g('inventory-title'),
+  inventoryTbody: g('inventory-tbody'),
   sidebarToggle: g('sidebar-toggle'),
   sidebarOverlay:g('sidebar-overlay'),
   sidebar:       g('sidebar'),
@@ -109,24 +118,37 @@ const E = {
   gameDropdownToggle: g('game-dropdown-toggle'),
   gameDropdownMenu: g('game-dropdown-menu'),
   gameDropdownLabel: g('game-dropdown-label'),
-  walletWrap: g('wallet-wrap'),
-  filterOwnedBtn: g('btn-filter-owned'),
-  btnSyncInv: g('btn-sync-inv'),
   invPopover: g('inv-popover'),
   invCardName: g('inv-card-name'),
-  invQtyRows: g('inv-qty-rows'),
   invGrading: g('inv-grading-select'),
-  invQtyInput: g('inv-qty-input'),
-  btnInvAdd: g('btn-inv-add'),
-  btnInvRemove: g('btn-inv-remove'),
-  btnInvSet: g('btn-inv-set'),
+  btnInvCart: g('btn-inv-cart'),
+  invStockStatus: g('inv-stock-status'),
+  invAdminSection: g('inv-admin-section'),
+  invAdminQty: g('inv-admin-qty'),
+  invAdminPrice: g('inv-admin-price'),
+  btnInvAdminUpdate: g('btn-inv-admin-update'),
+  btnInvAdminDelete: g('btn-inv-admin-delete'),
   invStatus: g('inv-status'),
   invClose: g('inv-popover-close'),
-  collectionControls: g('collection-controls'),
-  collectionSelect: g('collection-select'),
-  btnCollectionAdd: g('btn-collection-add'),
-  btnCollectionDelete: g('btn-collection-delete'),
-  collectionNameInput: g('collection-name-input'),
+  btnAuth: g('btn-auth'),
+  btnCart: g('btn-cart'),
+  cartCount: g('cart-count'),
+  btnInventory: g('btn-inventory'),
+  invItemCount: g('inv-item-count'),
+  authModal: g('auth-modal'),
+  authEmail: g('auth-email'),
+  authPassword: g('auth-password'),
+  btnAuthLogin: g('btn-auth-login'),
+  btnAuthRegister: g('btn-auth-register'),
+  authError: g('auth-error'),
+  authModalClose: g('auth-modal-close'),
+  authModalBackdrop: g('auth-modal-backdrop'),
+  cartModal: g('cart-modal'),
+  cartList: g('cart-list'),
+  cartTotal: g('cart-total'),
+  btnCheckout: g('btn-checkout'),
+  cartModalClose: g('cart-modal-close'),
+  cartModalBackdrop: g('cart-modal-backdrop'),
 };
 
 // ── Theme toggle ─────────────────────────────────────────────────────────
@@ -147,7 +169,6 @@ const E = {
     theme = theme === 'dark' ? 'light' : 'dark';
     root.setAttribute('data-theme', theme);
     setIcon(theme);
-    if (window.__appkit) window.__appkit.setThemeMode(theme);
   });
 })();
 
@@ -174,12 +195,6 @@ function esc(s) {
 function escA(s) {
   return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
-function invKey(game, slug, cardId, grading) {
-  return `${game}|${slug}|${cardId}|${grading}`;
-}
-function invTotalForCard(cardId) {
-  return [0, 9, 10].reduce((sum, g) => sum + (S.inventory.get(invKey(S.game, S.slug, cardId, g)) || 0), 0);
-}
 function fmtAge(sec) {
   if (sec == null) return 'unknown';
   if (sec < 60) return `${sec}s ago`;
@@ -187,57 +202,21 @@ function fmtAge(sec) {
   return `${Math.round(sec/3600)}h ago`;
 }
 
-function makeCollId() { return 'col_' + Date.now() + '_' + Math.random().toString(36).slice(2,6); }
-
-function getActiveCollection() {
-  return S.collections.find(c => c.id === S.activeCollectionId) || S.collections[0];
+function storeKey(game, slug, cardId, grading) {
+  return `${game}|${slug}|${cardId}|${grading}`;
 }
 
-function ensureDefaultCollection() {
-  if (S.collections.length > 0) return;
-  const col = { id: makeCollId(), name: 'New Collection', items: new Map() };
-  S.collections.push(col);
-  S.activeCollectionId = col.id;
-  S.inventory = col.items;
-  saveCollectionsToStorage();
-}
-
-function switchCollection(id) {
-  const col = S.collections.find(c => c.id === id);
-  if (!col) return;
-  S.activeCollectionId = col.id;
-  S.inventory = col.items;
-  saveCollectionsToStorage();
-  updateCollectionControls();
-  if (S.filterOwned) renderOwnedProducts();
-}
-
-function createCollection(name) {
-  const col = { id: makeCollId(), name: name || 'New Collection', items: new Map() };
-  S.collections.push(col);
-  saveCollectionsToStorage();
-  switchCollection(col.id);
-}
-
-function deleteCollection(id) {
-  if (S.collections.length <= 1) return;
-  S.collections = S.collections.filter(c => c.id !== id);
-  if (S.activeCollectionId === id) {
-    const next = S.collections[0];
-    S.activeCollectionId = next.id;
-    S.inventory = next.items;
-  }
-  saveCollectionsToStorage();
-  updateCollectionControls();
-  if (S.filterOwned) renderOwnedProducts();
-}
-
-function renameCollection(id, newName) {
-  const col = S.collections.find(c => c.id === id);
-  if (!col || !newName.trim()) return;
-  col.name = newName.trim();
-  saveCollectionsToStorage();
-  updateCollectionControls();
+async function loadStoreInventory(game, slug) {
+  try {
+    const res = await fetch(`${API}/api/store-inventory?game=${encodeURIComponent(game)}&set_slug=${encodeURIComponent(slug)}`);
+    const items = await res.json();
+    for (const key of S.storeInventory.keys()) {
+      if (key.startsWith(`${game}|${slug}|`)) S.storeInventory.delete(key);
+    }
+    items.forEach(item => {
+      S.storeInventory.set(storeKey(game, slug, item.card_number, item.grading), item);
+    });
+  } catch (err) {}
 }
 
 // ── Show/hide states ──────────────────────────────────────────────────────
@@ -248,7 +227,8 @@ function showState(name) {
   E.stateNoRes.style.display    = name === 'noresults'  ? 'flex' : 'none';
   E.tableWrap.style.display     = name === 'table'      ? 'block': 'none';
   E.stateSetsView.style.display = name === 'sets-view'  ? 'flex' : 'none';
-  E.stateOwnedView.style.display = name === 'owned-view' ? 'flex' : 'none';
+  E.stateSaleView.style.display = name === 'sale-view'  ? 'flex' : 'none';
+  E.stateInventoryView.style.display = name === 'inventory-view' ? 'flex' : 'none';
 }
 
 // ── Fetch ─────────────────────────────────────────────────────────────────
@@ -265,7 +245,6 @@ async function fetchSet(slug, force = false) {
   if (d.error && !d.cards?.length) throw new Error(d.error);
   return d;
 }
-
 // ── Game Tabs ─────────────────────────────────────────────────────────────
 const GAME_ORDER = ['pokemon','mtg','yugioh','onepiece','lorcana','digimon','dragonball','gundam','swu','riftbound'];
 
@@ -302,7 +281,6 @@ function switchGame(key) {
   E.setSearch.value = '';
 
   applyAccent(key);
-  if (window.__updateWalletAccent) window.__updateWalletAccent();
   document.querySelectorAll('.game-tab').forEach(t => {
     const active = t.dataset.game === key;
     t.classList.toggle('active', active);
@@ -464,9 +442,9 @@ async function loadSet(slug, name, btn) {
     document.querySelectorAll('.price-table th.sortable').forEach(t => t.classList.remove('sort-active'));
 
     cacheSetStats(slug, S.allCards);
+    await loadStoreInventory(S.game, slug);
     renderCards();
     updateStats();
-    updateCollectionControls();
     pushState();
   } catch (err) {
     if (lid !== S.loadId) return;
@@ -489,10 +467,12 @@ function updateStats() {
 
 // ── URL Routing ────────────────────────────────────────────────────────────
 function buildPath() {
-  // Build path from current state: /{game}[/{slug}][/sets]
+  // Build path from current state: /{game}[/{slug}][/sets-overview][/on-sale]
   let path = `/${S.game}`;
   if (S.setsView) {
-    path += '/sets';
+    path += '/sets-overview';
+  } else if (S.saleView) {
+    path += '/on-sale';
   } else if (S.slug) {
     path += `/${encodeURIComponent(S.slug)}`;
   }
@@ -502,7 +482,7 @@ function buildPath() {
 function pushState() {
   const path = buildPath();
   window.history.pushState(
-    { game: S.game, slug: S.slug, setsView: S.setsView },
+    { game: S.game, slug: S.slug, setsView: S.setsView, saleView: S.saleView },
     '',
     path
   );
@@ -515,6 +495,7 @@ async function restoreFromUrl() {
   // Default to welcome state
   if (parts.length === 0) {
     S.setsView = false;
+    S.saleView = false;
     S.slug = null;
     return;
   }
@@ -525,7 +506,6 @@ async function restoreFromUrl() {
   if (gameKey !== S.game) {
     S.game = gameKey;
     applyAccent(gameKey);
-    if (window.__updateWalletAccent) window.__updateWalletAccent();
     loadStatsFromStorage();
     buildGameTabs();
     if (E.gameDropdownLabel && S.games[gameKey]) {
@@ -538,15 +518,31 @@ async function restoreFromUrl() {
     });
   }
 
-  // Check for /sets flag
-  if (parts[parts.length - 1] === 'sets') {
+  // Check for /sets-overview flag
+  if (parts[parts.length - 1] === 'sets-overview') {
     S.setsView = true;
+    S.saleView = false;
     E.btnViewSets.classList.add('active');
+    E.btnViewSale.classList.remove('active');
     E.cardSearch.value = '';
     E.cardSearch.placeholder = 'Filter sets…';
     renderSetList();
     renderSetsOverview();
     showState('sets-view');
+    return;
+  }
+
+  // Check for /on-sale flag
+  if (parts[parts.length - 1] === 'on-sale') {
+    S.saleView = true;
+    S.setsView = false;
+    E.btnViewSale.classList.add('active');
+    E.btnViewSets.classList.remove('active');
+    E.cardSearch.value = '';
+    E.cardSearch.placeholder = 'Filter sale items…';
+    renderSetList();
+    renderSaleView();
+    showState('sale-view');
     return;
   }
 
@@ -557,13 +553,16 @@ async function restoreFromUrl() {
     if (setInfo) {
       S.slug = slug;
       S.setsView = false;
+      S.saleView = false;
       E.btnViewSets.classList.remove('active');
+      E.btnViewSale.classList.remove('active');
       await loadSet(slug, setInfo.name);
     }
   } else {
     // Just game selected, no set
     S.slug = null;
     S.setsView = false;
+    S.saleView = false;
     renderSetList();
     showState('welcome');
   }
@@ -600,11 +599,6 @@ function getProcessedCards() {
   let cards = [...S.allCards];
   const q = S.query.toLowerCase().trim();
   if (q) cards = cards.filter(c => c.name.toLowerCase().includes(q));
-
-  // Filter owned
-  if (S.filterOwned && S.wallet.connected) {
-    cards = cards.filter(c => invTotalForCard(c.id) > 0);
-  }
 
   // Split sealed from individual cards
   const sealed = cards.filter(c => c.sealed);
@@ -667,8 +661,11 @@ function renderCards() {
       const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
       const pv = parsePrice(card.psa10);
       const pClass = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
-      const total = invTotalForCard(card.id);
-      const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
+      const stockKey = storeKey(S.game, S.slug, card.id, 0);
+      const stockItem = S.storeInventory.get(stockKey);
+      const stockQty = stockItem ? stockItem.quantity_available : 0;
+      const stockLabel = stockQty === 0 ? 'Out of stock' : `${stockQty} in stock`;
+      const stockClass = stockQty === 0 ? 'stock-out' : 'stock-in';
       tr.innerHTML = `
         <td class="td-num">${++rowNum}</td>
         <td class="td-img">
@@ -677,10 +674,11 @@ function renderCards() {
             : `<div class="card-thumb-ph">📦</div>`}
         </td>
         <td><a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a></td>
+        <td class="td-stock"><span class="stock-badge ${stockClass}">${esc(stockLabel)}</span></td>
         <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
         <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
         <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>
-        <td class="td-action">${qtyBadge}<button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Inventory options">⋮</button></td>`;
+        <td class="td-action"><button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Options">⋮</button></td>`;
       frag.appendChild(tr);
     });
   }
@@ -704,9 +702,11 @@ function renderCards() {
     const pClass  = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
     const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
     const u2Class = card.ungraded === '—' ? 'price price-nil' : uClass;
-    const total = invTotalForCard(card.id);
-    const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
-
+    const stockKey = storeKey(S.game, S.slug, card.id, 0);
+    const stockItem = S.storeInventory.get(stockKey);
+    const stockQty = stockItem ? stockItem.quantity_available : 0;
+    const stockLabel = stockQty === 0 ? 'Out of stock' : `${stockQty} in stock`;
+    const stockClass = stockQty === 0 ? 'stock-out' : 'stock-in';
     tr.innerHTML = `
       <td class="td-num">${++rowNum}</td>
       <td class="td-img">
@@ -715,10 +715,11 @@ function renderCards() {
           : `<div class="card-thumb-ph">🃏</div>`}
       </td>
       <td><a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a></td>
+      <td class="td-stock"><span class="stock-badge ${stockClass}">${esc(stockLabel)}</span></td>
       <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
       <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
       <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>
-      <td class="td-action">${qtyBadge}<button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Inventory options">⋮</button></td>`;
+      <td class="td-action"><button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Options">⋮</button></td>`;
     frag.appendChild(tr);
   });
 
@@ -771,8 +772,6 @@ function renderGlobalSearchResults(query) {
       const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
       const pv = parsePrice(card.psa10);
       const pClass = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
-      const total = invTotalForCard(card.id);
-      const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
       tr.innerHTML = `
         <td class="td-num">${++rowNum}</td>
         <td class="td-img">
@@ -784,7 +783,7 @@ function renderGlobalSearchResults(query) {
         <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
         <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
         <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>
-        <td class="td-action">${qtyBadge}<button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Inventory options">⋮</button></td>`;
+        <td class="td-action"><button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Options">⋮</button></td>`;
       frag.appendChild(tr);
     });
 
@@ -797,8 +796,6 @@ function renderGlobalSearchResults(query) {
       const pClass  = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
       const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
       const u2Class = card.ungraded === '—' ? 'price price-nil' : uClass;
-      const total = invTotalForCard(card.id);
-      const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
       tr.innerHTML = `
         <td class="td-num">${++rowNum}</td>
         <td class="td-img">
@@ -810,7 +807,7 @@ function renderGlobalSearchResults(query) {
         <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
         <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
         <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>
-        <td class="td-action">${qtyBadge}<button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Inventory options">⋮</button></td>`;
+        <td class="td-action"><button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Options">⋮</button></td>`;
       frag.appendChild(tr);
     });
 
@@ -839,7 +836,7 @@ function filterSetsOverview(query) {
 let searchTimer;
 E.cardSearch.addEventListener('input', e => {
   if (S.setsView) { filterSetsOverview(e.target.value); return; }
-  if (S.filterOwned) { filterOwnedProducts(e.target.value); return; }
+  if (S.saleView) { filterSaleView(e.target.value); return; }
 
   const query = e.target.value;
   clearTimeout(searchTimer);
@@ -886,38 +883,8 @@ function sortSetsOverview(sortValue) {
   E.setsOvTbody.appendChild(frag);
 }
 
-function filterOwnedProducts(query) {
-  const q = query.toLowerCase().trim();
-  E.ownedProductsTbody.querySelectorAll('tr.owned-row').forEach(row => {
-    const name = row.querySelector('.td-name')?.textContent?.toLowerCase() || '';
-    row.style.display = !q || name.includes(q) ? '' : 'none';
-  });
-}
-
-function sortOwnedProducts(sortValue) {
-  const rows = Array.from(E.ownedProductsTbody.querySelectorAll('tr.owned-row'));
-  rows.sort((a, b) => {
-    const getPrice = (row, col) => parseFloat(row.cells[col]?.textContent || '0') || 0;
-    const getNum = (row, col) => parseInt(row.cells[col]?.textContent || '0') || 0;
-    const getName = (row) => row.cells[2]?.textContent || '';
-
-    switch (sortValue) {
-      case 'name-asc':    return getName(a).localeCompare(getName(b));
-      case 'price-desc':  return getPrice(b, 5) - getPrice(a, 5);  // Ungraded col
-      case 'price-asc':   return getPrice(a, 5) - getPrice(b, 5);
-      case 'psa10-desc':  return getPrice(b, 7) - getPrice(a, 7);  // PSA 10 col
-      case 'grade9-desc': return getPrice(b, 6) - getPrice(a, 6);  // Grade 9 col
-      default: return getNum(a, 0) - getNum(b, 0);                 // Default: restore index order
-    }
-  });
-  const frag = document.createDocumentFragment();
-  rows.forEach(r => frag.appendChild(r));
-  E.ownedProductsTbody.appendChild(frag);
-}
-
 E.sortSelect.addEventListener('change', e => {
   if (S.setsView) { sortSetsOverview(e.target.value); return; }
-  if (S.filterOwned) { sortOwnedProducts(e.target.value); return; }
   S.sort = e.target.value;
   document.querySelectorAll('.price-table th.sortable').forEach(t => t.classList.remove('sort-active'));
   renderCards();
@@ -1154,6 +1121,8 @@ function updateSovRow(row, stats) {
 
 function enterSetsView() {
   if (S.setsView) { exitSetsView(); return; }
+  // Exit sale view if active
+  if (S.saleView) exitSaleView(false);
   S.setsView = true;
   E.btnViewSets.classList.add('active');
   E.statsBar.style.display = 'none';
@@ -1197,24 +1166,196 @@ function exitSetsView(restoreState = true) {
   pushState();
 }
 
+// ── On Sale View ──────────────────────────────────────────────────────────
+async function enterSaleView() {
+  if (S.saleView) { exitSaleView(); return; }
+  // Exit sets view if active
+  if (S.setsView) exitSetsView(false);
+  S.saleView = true;
+  E.btnViewSale.classList.add('active');
+  E.statsBar.style.display = 'none';
+  E.footerBar.style.display = 'none';
+  E.setExtLink.style.display = 'none';
+  E.cardSearch.value = '';
+  E.cardSearch.placeholder = 'Filter sale items…';
+  E.sortSelect.value = 'default';
+  document.querySelectorAll('.set-item').forEach(el => {
+    el.classList.remove('active');
+    el.setAttribute('aria-selected', 'false');
+  });
+  // Reload inventory to get latest items added after page load
+  await loadInventory();
+  renderSaleView();
+  showState('sale-view');
+  pushState();
+}
+
+function exitSaleView(restoreState = true) {
+  S.saleView = false;
+  E.btnViewSale.classList.remove('active');
+  E.saleSearch.value = '';
+  if (!restoreState) return;
+  if (S.slug && S.allCards.length) {
+    E.statsBar.style.display = 'flex';
+    E.footerBar.style.display = 'flex';
+    E.setExtLink.style.display = '';
+    E.cardSearch.value = '';
+    E.cardSearch.placeholder = 'Search cards…';
+    showState('table');
+  } else {
+    showState('welcome');
+  }
+  pushState();
+}
+
+// Cache product images to localStorage as data URLs
+async function cacheImagesToLocalStorage(items) {
+  // Collect unique cards that need caching
+  const cardsToCache = new Set();
+  for (const item of items) {
+    const card = item.cardData || S.cardCache.get(`${item.game}|${item.set_slug}|${item.card_number}`);
+    if (card && card.img && !card.img.startsWith('data:')) {
+      cardsToCache.add(card);
+    }
+  }
+
+  // Download and cache each image as data URL
+  for (const card of cardsToCache) {
+    try {
+      const res = await fetch(card.img);
+      const blob = await res.blob();
+      const reader = new FileReader();
+      reader.onload = () => {
+        card.img = reader.result; // Replace with data URL
+        saveProductsToStorage(); // Persist to localStorage
+      };
+      reader.readAsDataURL(blob);
+    } catch (e) {
+      // Network error, keep original URL
+    }
+  }
+}
+
+function renderSaleView() {
+  // Fetch all sale items from inventory (must have price and available stock)
+  const allItems = [];
+  for (const item of S.adminInventory) {
+    if (item.price_cents > 0 && item.available_stock > 0) {
+      allItems.push(item);
+    }
+  }
+  S.saleCards = allItems;
+
+  // Start caching images in background
+  cacheImagesToLocalStorage(allItems);
+
+  // Separate sealed from individual items
+  const sealed = allItems.filter(item => item.sealed);
+  const individual = allItems.filter(item => !item.sealed);
+
+  E.saleTitle.textContent = `On Sale — ${allItems.length} Items`;
+  E.saleTbody.innerHTML = '';
+
+  const frag = document.createDocumentFragment();
+
+  // Add sealed section if there are sealed products
+  if (sealed.length > 0) {
+    const dividerRow = document.createElement('tr');
+    dividerRow.className = 'section-divider';
+    dividerRow.innerHTML = `<td colspan="8"><span class="section-label sealed-label">📦 Sealed Products <span class="section-count">${sealed.length}</span></span></td>`;
+    frag.appendChild(dividerRow);
+
+    sealed.forEach(item => {
+      const gradingLabel = item.grading === 0 ? 'Ungraded' : item.grading === 9 ? 'Grade 9' : 'PSA 10';
+      const price = (item.price_cents / 100).toFixed(2);
+      const card = item.cardData || S.cardCache.get(`${item.game}|${item.set_slug}|${item.card_number}`);
+      const imgUrl = card?.img;
+      const imgHtml = imgUrl
+        ? `<img class="card-thumb" src="${escA(imgUrl)}" alt="${escA(item.card_name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>📦</div>'">`
+        : `<div class="card-thumb-ph">📦</div>`;
+
+      const tr = document.createElement('tr');
+      tr.className = 'sale-row sealed-row';
+      tr.dataset.cardId = `${item.game}-${item.set_slug}-${item.card_number}-${item.grading}`;
+      tr.innerHTML = `
+        <td class="td-img">${imgHtml}</td>
+        <td class="td-name">${esc(item.card_name || `Sealed #${item.card_number}`)}</td>
+        <td class="td-name">#${esc(item.card_number)}</td>
+        <td class="td-name">${esc(item.set_slug)}</td>
+        <td class="td-price">${esc(gradingLabel)}</td>
+        <td class="td-price"><span class="sov-price">$${price}</span></td>
+        <td class="td-price td-stock">${item.available_stock}</td>
+        <td class="td-action"><button class="btn-add-to-cart" data-game="${escA(item.game)}" data-set="${escA(item.set_slug)}" data-card="${escA(item.card_number)}" data-grading="${item.grading}">Add</button></td>`;
+      frag.appendChild(tr);
+    });
+  }
+
+  // Add individual cards section
+  if (individual.length > 0) {
+    if (sealed.length > 0) {
+      const dividerRow = document.createElement('tr');
+      dividerRow.className = 'section-divider';
+      dividerRow.innerHTML = `<td colspan="8"><span class="section-label">Individual Cards <span class="section-count">${individual.length}</span></span></td>`;
+      frag.appendChild(dividerRow);
+    }
+
+    individual.forEach(item => {
+      const gradingLabel = item.grading === 0 ? 'Ungraded' : item.grading === 9 ? 'Grade 9' : 'PSA 10';
+      const price = (item.price_cents / 100).toFixed(2);
+      const card = item.cardData || S.cardCache.get(`${item.game}|${item.set_slug}|${item.card_number}`);
+      const imgUrl = card?.img;
+      const imgHtml = imgUrl
+        ? `<img class="card-thumb" src="${escA(imgUrl)}" alt="${escA(item.card_name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>🃏</div>'">`
+        : `<div class="card-thumb-ph">🃏</div>`;
+
+      const tr = document.createElement('tr');
+      tr.className = 'sale-row';
+      tr.dataset.cardId = `${item.game}-${item.set_slug}-${item.card_number}-${item.grading}`;
+      tr.innerHTML = `
+        <td class="td-img">${imgHtml}</td>
+        <td class="td-name">${esc(item.card_name || `Card #${item.card_number}`)}</td>
+        <td class="td-name">#${esc(item.card_number)}</td>
+        <td class="td-name">${esc(item.set_slug)}</td>
+        <td class="td-price">${esc(gradingLabel)}</td>
+        <td class="td-price"><span class="sov-price">$${price}</span></td>
+        <td class="td-price td-stock">${item.available_stock}</td>
+        <td class="td-action"><button class="btn-add-to-cart" data-game="${escA(item.game)}" data-set="${escA(item.set_slug)}" data-card="${escA(item.card_number)}" data-grading="${item.grading}">Add</button></td>`;
+      frag.appendChild(tr);
+    });
+  }
+
+  E.saleTbody.appendChild(frag);
+}
+
+function filterSaleView(query) {
+  const q = query.toLowerCase().trim();
+  E.saleTbody.querySelectorAll('tr.sale-row').forEach(row => {
+    const cardName = row.querySelector('.td-name')?.textContent?.toLowerCase() || '';
+    const setName = row.querySelector('.td-name:nth-child(2)')?.textContent?.toLowerCase() || '';
+    const matches = !q || cardName.includes(q) || setName.includes(q);
+    row.style.display = matches ? '' : 'none';
+  });
+}
+
 function markQueuedRows(gameKey) {
-  // Mark rows that are in the queue with spinners and restore row references
+  // Mark row that is currently processing (in-flight) with spinners and restore row references
   const q = getGameQueue(gameKey);
   const queuedSlugs = new Set(q.queue.map(item => item.slug));
 
   E.setsOvTbody.querySelectorAll('tr[data-slug]').forEach(row => {
-    if (queuedSlugs.has(row.dataset.slug)) {
-      // Restore row reference for queued item
-      const item = q.queue.find(i => i.slug === row.dataset.slug);
-      if (item) item.row = row;
-
-      const cells = row.querySelectorAll('td');
-      if (cells.length >= 7) {
+    const cells = row.querySelectorAll('td');
+    if (cells.length >= 7) {
+      if (q.inFlight && q.inFlight.slug === row.dataset.slug) {
+        // Show spinners only on the item currently being processed
         cells[2].innerHTML = '<span class="sov-spinner"></span>';
         cells[3].innerHTML = '<span class="sov-spinner"></span>';
         cells[4].innerHTML = '<span class="sov-spinner"></span>';
         cells[5].innerHTML = '<span class="sov-spinner"></span>';
         cells[6].innerHTML = '';
+      } else if (queuedSlugs.has(row.dataset.slug)) {
+        // Just restore row reference for queued items (no spinners)
+        const item = q.queue.find(i => i.slug === row.dataset.slug);
+        if (item) item.row = row;
       }
     }
   });
@@ -1381,17 +1522,6 @@ function queueSetLoad(slug, name, row, gameKey = S.game) {
   const q = getGameQueue(gameKey);
   q.queue.push({ slug, name, row });
   saveQueuesToStorage();
-  // Mark row with spinners if it's visible
-  if (gameKey === S.game && row && row.closest('tbody')) {
-    const cells = row.querySelectorAll('td');
-    if (cells.length >= 7) {
-      cells[2].innerHTML = '<span class="sov-spinner"></span>';
-      cells[3].innerHTML = '<span class="sov-spinner"></span>';
-      cells[4].innerHTML = '<span class="sov-spinner"></span>';
-      cells[5].innerHTML = '<span class="sov-spinner"></span>';
-      cells[6].innerHTML = '';
-    }
-  }
   // Update UI button
   if (gameKey === S.game) {
     updateLoadQueueUI();
@@ -1429,144 +1559,18 @@ async function loadAllStats() {
   }
 }
 
-// ── Inventory Management ──────────────────────────────────────────────────
-function loadCollectionsFromStorage() {
-  try {
-    // Legacy migration
-    const legacy = localStorage.getItem('tcg-inventory');
-    if (legacy) {
-      try {
-        const obj = JSON.parse(legacy);
-        const items = new Map(Object.entries(obj).map(([k, v]) => [k, Number(v)]));
-        const col = { id: makeCollId(), name: 'My Collection', items };
-        S.collections = [col];
-        S.activeCollectionId = col.id;
-        S.inventory = col.items;
-        localStorage.removeItem('tcg-inventory');
-        localStorage.removeItem('tcg-inventory-synced');
-        saveCollectionsToStorage();
-        return;
-      } catch {}
-    }
-
-    const raw = localStorage.getItem('tcg-collections');
-    if (raw) {
-      try {
-        const { cols, active } = JSON.parse(raw);
-        S.collections = cols.map(c => ({
-          id: c.id,
-          name: c.name,
-          items: new Map(Object.entries(c.items || {}).map(([k, v] ) => [k, Number(v)]))
-        }));
-        S.activeCollectionId = active;
-        const col = getActiveCollection();
-        if (col) { S.activeCollectionId = col.id; S.inventory = col.items; }
-      } catch {}
-    }
-  } catch (err) {}
-  ensureDefaultCollection();
-}
-
-async function syncInventoryToContract() {
-  if (!S.wallet.connected || !window.__inventory?.isAvailable()) {
-    E.btnSyncInv?.classList.remove('syncing');
-    return;
-  }
-
-  E.btnSyncInv?.classList.add('syncing');
-  E.btnSyncInv.textContent = 'Syncing…';
-  E.btnSyncInv.disabled = true;
-
-  try {
-    const toSync = [];
-    for (const [k, v] of S.inventory) {
-      if (!S.inventorySynced.has(k)) {
-        toSync.push({ key: k, qty: v });
-      }
-    }
-
-    for (const { key, qty } of toSync) {
-      const [game, slug, cardId, grading] = key.split('|');
-      if (qty > 0) {
-        await window.__inventory.setCardQuantity(game, slug, cardId, Number(grading), qty);
-      }
-      S.inventorySynced.add(key);
-    }
-
-    saveCollectionsToStorage();
-    E.btnSyncInv.textContent = toSync.length > 0 ? 'Synced!' : 'Up to date';
-  } catch (err) {
-    E.btnSyncInv.textContent = 'Sync failed';
-  } finally {
-    E.btnSyncInv?.classList.remove('syncing');
-    E.btnSyncInv.disabled = false;
-    setTimeout(() => {
-      if (E.btnSyncInv) E.btnSyncInv.textContent = '↔ Sync';
-    }, 2000);
-  }
-}
-
-function saveCollectionsToStorage() {
-  try {
-    localStorage.setItem('tcg-collections', JSON.stringify({
-      cols: S.collections.map(c => ({ id: c.id, name: c.name, items: Object.fromEntries(c.items) })),
-      active: S.activeCollectionId
-    }));
-    localStorage.setItem('tcg-inventory-synced', JSON.stringify([...S.inventorySynced]));
-  } catch (err) {}
-}
-
-function updateInventoryUI() {
-  const connected = S.wallet.connected;
-  // Enable the owned button always (there's always a collection)
-  if (E.filterOwnedBtn) E.filterOwnedBtn.disabled = false;
-  if (E.btnSyncInv) E.btnSyncInv.disabled = !connected;
-}
-
-function updateCollectionControls() {
-  const inOwned = S.filterOwned;
-  // toolbar-left: show set-title OR collection-name-input
-  E.setTitle.style.display = inOwned ? 'none' : '';
-  E.setExtLink.style.display = inOwned ? 'none' : (S.slug ? '' : 'none');
-  E.collectionNameInput.style.display = inOwned ? '' : 'none';
-  // toolbar-right: show collection controls only in owned view
-  E.collectionControls.style.display = inOwned ? 'flex' : 'none';
-
-  if (!inOwned) return;
-
-  const col = getActiveCollection();
-  E.collectionNameInput.value = col?.name || '';
-  E.collectionSelect.innerHTML = S.collections.map(c =>
-    `<option value="${escA(c.id)}"${c.id === S.activeCollectionId ? ' selected' : ''}>${esc(c.name)}</option>`
-  ).join('');
-  E.btnCollectionDelete.disabled = S.collections.length <= 1;
-}
-
-// ── Wallet State Handler ──────────────────────────────────────────────────
-window.__walletStateChange = function({ address, isConnected }) {
-  S.wallet.connected = isConnected;
-  S.wallet.address = address || null;
-  if (isConnected && address) {
-    localStorage.setItem('tcg-wallet-addr', address);
-  } else {
-    localStorage.removeItem('tcg-wallet-addr');
-  }
-  if (E.btnSyncInv) E.btnSyncInv.disabled = !isConnected;
-  updateInventoryUI();
-};
 
 async function init() {
   applyAccent(S.game);
-  if (window.__updateWalletAccent) window.__updateWalletAccent();
+  loadAuthToken();
   loadStatsFromStorage();
   loadProductsFromStorage();
-  loadCollectionsFromStorage();
   loadQueuesFromStorage();
-  updateInventoryUI();
-
-
-  const savedAddr = localStorage.getItem('tcg-wallet-addr');
-  if (savedAddr) S.wallet.address = savedAddr;
+  // Load public on-sale inventory for all users
+  await loadInventory();
+  if (S.authToken) {
+    await loadCart();
+  }
 
   if (!API) {
     E.setSkeleton.style.display = 'none';
@@ -1610,157 +1614,6 @@ async function init() {
   }
 }
 
-async function renderOwnedProducts() {
-
-  const items = [];
-  const setsToFetch = new Set();
-
-  for (const [key, qty] of S.inventory) {
-    const [game, slug, cardId, grading] = key.split('|');
-    const g = S.games[game];
-    if (!g) continue;
-
-    const sets = g.sets || [];
-    const set = sets.find(s => s.slug === slug);
-    if (!set) continue;
-
-    const cardKey = `${game}|${slug}|${cardId}`;
-    const cardEntry = items.find(i => i.cardKey === cardKey);
-
-    if (!cardEntry) {
-      items.push({
-        cardKey,
-        game, slug, cardId,
-        gameName: g.label,
-        setName: set.name,
-        card: null,
-        qty: { 0: 0, 9: 0, 10: 0 }
-      });
-    }
-
-    const entry = items.find(i => i.cardKey === cardKey);
-    const gradingNum = parseInt(grading) || 0;
-    entry.qty[gradingNum] = qty;
-
-    // Check if this card is in cache; if not, mark set for fetching
-    if (!S.cardCache.has(cardKey)) {
-      setsToFetch.add(slug);
-    }
-  }
-
-  if (setsToFetch.size > 0) {
-    if (E.loadingLabel) E.loadingLabel.textContent = 'Loading collection…';
-    showState('loading');
-    for (const slug of setsToFetch) {
-      try {
-        const d = await fetchSet(slug);
-        if (d.cards && d.cards.length) {
-          // Find all games that have items from this slug
-          const gamesForSlug = new Set();
-          for (const item of items) {
-            if (item.slug === slug) gamesForSlug.add(item.game);
-          }
-          // Cache cards for each game that needs them
-          for (const card of d.cards) {
-            for (const game of gamesForSlug) {
-              const cacheKey = `${game}|${slug}|${card.id}`;
-              S.cardCache.set(cacheKey, card);
-            }
-          }
-        }
-      } catch (err) {
-      }
-    }
-    saveProductsToStorage();
-  }
-
-  // Ensure all cards are loaded before rendering (validate table is fully loaded)
-  const missingCards = [];
-  for (const item of items) {
-    const cacheKey = `${item.game}|${item.slug}|${item.cardId}`;
-    if (!S.cardCache.has(cacheKey)) {
-      missingCards.push(cacheKey);
-    }
-  }
-  if (missingCards.length > 0) {
-  }
-
-  let html = '';
-  let rowIdx = 1;
-
-  // Track totals by grading level
-  const totals = { 0: { qty: 0, value: 0 }, 9: { qty: 0, value: 0 }, 10: { qty: 0, value: 0 } };
-
-  items.forEach((item) => {
-    const cacheKey = `${item.game}|${item.slug}|${item.cardId}`;
-    const card = S.cardCache.get(cacheKey);
-    if (!card) return;
-
-    const thumb = card.thumb || card.image || '';
-    const imgHtml = thumb ? `<img class="card-thumb" src="${escA(thumb)}" alt="${escA(card.name)}" style="cursor:pointer">` : '';
-    const total = item.qty[0] + item.qty[9] + item.qty[10];
-    const qtyBadge = total > 0 ? `<span class="qty-badge">${total}</span>` : '';
-
-    // Calculate totals (handle both string prices and raw numbers)
-    // Skip em-dash '—' which means price not available on PriceCharting
-    const ungradedPrice = (card.ungraded === '—' || !card.ungraded) ? 0 : (typeof card.ungraded === 'number' ? card.ungraded : (parsePrice(card.ungraded) || 0));
-    const grade9Price = (card.grade9 === '—' || !card.grade9) ? 0 : (typeof card.grade9 === 'number' ? card.grade9 : (parsePrice(card.grade9) || 0));
-    const psa10Price = (card.psa10 === '—' || !card.psa10) ? 0 : (typeof card.psa10 === 'number' ? card.psa10 : (parsePrice(card.psa10) || 0));
-
-    totals[0].qty += item.qty[0];
-    totals[0].value += item.qty[0] * ungradedPrice;
-    totals[9].qty += item.qty[9];
-    totals[9].value += item.qty[9] * grade9Price;
-    totals[10].qty += item.qty[10];
-    totals[10].value += item.qty[10] * psa10Price;
-
-    html += `
-      <tr class="owned-row">
-        <td class="td-num">${rowIdx}</td>
-        <td class="td-img">${imgHtml}</td>
-        <td class="td-name" title="${escA(card.name)}">${esc(card.name)}</td>
-        <td class="td-name" title="${escA(item.setName)}">${esc(item.setName)}</td>
-        <td class="td-name" title="${escA(item.gameName)}">${esc(item.gameName)}</td>
-        <td class="td-price">${esc(card.ungraded)}</td>
-        <td class="td-price">${esc(card.grade9)}</td>
-        <td class="td-price">${esc(card.psa10)}</td>
-        <td class="td-action">${qtyBadge}<button class="btn-dots" data-card-id="${escA(card.id)}" data-game="${escA(item.game)}" data-slug="${escA(item.slug)}" aria-label="Inventory options">⋮</button></td>
-      </tr>
-    `;
-    rowIdx++;
-  });
-
-  // Add totals row
-  if (items.length > 0) {
-    html += `
-      <tr class="owned-row-total">
-        <td class="td-num">Total</td>
-        <td class="td-img"></td>
-        <td class="td-name"></td>
-        <td class="td-name"></td>
-        <td class="td-name"></td>
-        <td class="td-price"><strong>${fmt(totals[0].value)}</strong><br><span style="font-size:var(--text-xs);color:var(--muted)">${totals[0].qty} items</span></td>
-        <td class="td-price"><strong>${fmt(totals[9].value)}</strong><br><span style="font-size:var(--text-xs);color:var(--muted)">${totals[9].qty} items</span></td>
-        <td class="td-price"><strong>${fmt(totals[10].value)}</strong><br><span style="font-size:var(--text-xs);color:var(--muted)">${totals[10].qty} items</span></td>
-        <td class="td-action"></td>
-      </tr>
-    `;
-  }
-
-  E.ownedProductsTbody.innerHTML = html;
-  updateCollectionControls();
-  showState('owned-view');
-}
-
-// ── Filter Owned Toggle ───────────────────────────────────────────────────
-E.filterOwnedBtn?.addEventListener('click', async () => {
-  S.filterOwned = !S.filterOwned;
-  E.filterOwnedBtn.setAttribute('aria-pressed', S.filterOwned ? 'true' : 'false');
-  E.filterOwnedBtn.classList.toggle('active', S.filterOwned);
-  updateCollectionControls();
-  if (S.filterOwned) await renderOwnedProducts();
-  else renderCards();
-});
 
 // ── Sets Overview events ──────────────────────────────────────────────────
 E.btnViewSets.addEventListener('click', enterSetsView);
@@ -1773,6 +1626,23 @@ E.setsOvTbody.addEventListener('click', (e) => {
   e.stopPropagation(); // prevent row click from also firing loadSet()
   const row = btn.closest('tr');
   if (row) queueSetLoad(btn.dataset.slug, btn.dataset.name, row);
+});
+
+// ── On Sale View events ───────────────────────────────────────────────────
+E.btnViewSale.addEventListener('click', enterSaleView);
+E.saleSearch.addEventListener('input', (e) => filterSaleView(e.target.value));
+
+// Delegate Add to Cart buttons (added dynamically)
+E.saleTbody.addEventListener('click', (e) => {
+  const btn = e.target.closest('.btn-add-to-cart');
+  if (!btn) return;
+  const game = btn.dataset.game;
+  const setSlug = btn.dataset.set;
+  const cardNumber = btn.dataset.card;
+  const grading = parseInt(btn.dataset.grading, 10);
+  addToCart(game, setSlug, cardNumber, grading);
+  btn.textContent = '✓ Added';
+  setTimeout(() => { btn.textContent = 'Add'; }, 1500);
 });
 
 // ── Cache click handlers ──────────────────────────────────────────────────
@@ -1792,23 +1662,413 @@ document.addEventListener('wheel', (e) => {
     E.gameBarInner.scrollLeft += e.deltaY > 0 ? 50 : -50;
   }
 }, { passive: false, capture: true });
-E.collectionSelect?.addEventListener('change', () => switchCollection(E.collectionSelect.value));
+// ── Auth & Cart Management ────────────────────────────────────────
 
-E.btnCollectionAdd?.addEventListener('click', () => {
-  const name = prompt('Collection name:', `Collection ${S.collections.length + 1}`);
-  if (name !== null) createCollection(name.trim() || `Collection ${S.collections.length + 1}`);
-});
+function saveAuthToken(token, userId, isAdmin) {
+  S.authToken = token;
+  S.userId = userId;
+  S.isAdmin = !!isAdmin;
+  localStorage.setItem('tcg-auth-token', token);
+  localStorage.setItem('tcg-user-id', String(userId));
+  localStorage.setItem('tcg-is-admin', isAdmin ? '1' : '0');
+  updateAuthUI();
+}
 
-E.btnCollectionDelete?.addEventListener('click', () => {
-  const col = getActiveCollection();
-  if (!col || S.collections.length <= 1) return;
-  if (confirm(`Delete "${col.name}"? This cannot be undone.`)) deleteCollection(col.id);
-});
+function loadAuthToken() {
+  S.authToken = localStorage.getItem('tcg-auth-token');
+  S.userId = localStorage.getItem('tcg-user-id');
+  S.isAdmin = localStorage.getItem('tcg-is-admin') === '1';
+  updateAuthUI();
+}
 
-E.collectionNameInput?.addEventListener('change', () =>
-  renameCollection(S.activeCollectionId, E.collectionNameInput.value));
-E.collectionNameInput?.addEventListener('blur', () =>
-  renameCollection(S.activeCollectionId, E.collectionNameInput.value));
+function clearAuthToken() {
+  S.authToken = null;
+  S.userId = null;
+  S.isAdmin = false;
+  S.cart.clear();
+  localStorage.removeItem('tcg-auth-token');
+  localStorage.removeItem('tcg-user-id');
+  localStorage.removeItem('tcg-is-admin');
+  updateAuthUI();
+}
+
+function updateAuthUI() {
+  if (S.userId) {
+    E.btnAuth.textContent = 'Logout';
+    if (S.isAdmin) {
+      E.btnCart.style.display = 'none';
+      E.btnInventory.style.display = '';
+    } else {
+      E.btnCart.style.display = '';
+      E.btnInventory.style.display = 'none';
+      E.cartCount.style.display = S.cart.size > 0 ? 'block' : 'none';
+    }
+  } else {
+    E.btnAuth.textContent = 'Login';
+    E.btnCart.style.display = '';
+    E.btnInventory.style.display = 'none';
+    E.cartCount.style.display = 'none';
+  }
+}
+
+function openAuthModal() {
+  E.authModal.style.display = 'flex';
+  E.authEmail.value = '';
+  E.authPassword.value = '';
+  E.authError.style.display = 'none';
+  E.authEmail.focus();
+}
+
+function closeAuthModal() {
+  E.authModal.style.display = 'none';
+}
+
+async function login() {
+  const email = E.authEmail.value.trim();
+  const password = E.authPassword.value.trim();
+  if (!email || !password) {
+    E.authError.textContent = 'Please enter email and password';
+    E.authError.style.display = 'block';
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Login failed');
+
+    saveAuthToken(data.token, data.userId, data.isAdmin);
+    closeAuthModal();
+    await loadCart();
+  } catch (err) {
+    E.authError.textContent = err.message;
+    E.authError.style.display = 'block';
+  }
+}
+
+async function register() {
+  const email = E.authEmail.value.trim();
+  const password = E.authPassword.value.trim();
+  if (!email || !password) {
+    E.authError.textContent = 'Please enter email and password';
+    E.authError.style.display = 'block';
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Registration failed');
+
+    saveAuthToken(data.token, data.userId, data.isAdmin);
+    closeAuthModal();
+    await loadCart();
+  } catch (err) {
+    E.authError.textContent = err.message;
+    E.authError.style.display = 'block';
+  }
+}
+
+function openCartModal() {
+  if (!S.userId) {
+    openAuthModal();
+    return;
+  }
+  E.cartModal.style.display = 'flex';
+  renderCartUI();
+  document.body.style.overflow = 'hidden';
+}
+
+function closeCartModal() {
+  E.cartModal.style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+async function loadCart() {
+  if (!S.authToken) return;
+  try {
+    const res = await fetch(`${API}/api/cart`, {
+      headers: { 'Authorization': `Bearer ${S.authToken}` }
+    });
+    const items = await res.json();
+    S.cart.clear();
+    items.forEach(item => {
+      const key = `${item.game}|${item.set_slug}|${item.card_number}|${item.grading}`;
+      S.cart.set(key, { ...item, quantity: item.quantity });
+    });
+    updateCartCount();
+  } catch (err) {}
+}
+
+async function addToCart(game, slug, cardId, grading, quantity = 1) {
+  if (!S.userId) {
+    openAuthModal();
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API}/api/cart/add`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${S.authToken}`
+      },
+      body: JSON.stringify({ game, set_slug: slug, card_number: cardId, grading, quantity })
+    });
+
+    if (!res.ok) throw new Error('Failed to add to cart');
+    await loadCart();
+    // Reload inventory to recalculate available stock
+    await loadInventory();
+  } catch (err) {
+    console.error('Add to cart error:', err);
+  }
+}
+
+async function removeFromCart(game, slug, cardId, grading) {
+  if (!S.authToken) return;
+
+  try {
+    await fetch(`${API}/api/cart/remove`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${S.authToken}`
+      },
+      body: JSON.stringify({ game, set_slug: slug, card_number: cardId, grading })
+    });
+    await loadCart();
+    // Reload inventory to recalculate available stock
+    await loadInventory();
+  } catch (err) {
+    console.error('Remove from cart error:', err);
+  }
+}
+
+async function updateCartItem(game, slug, cardId, grading, quantity) {
+  if (!S.authToken) return;
+
+  try {
+    await fetch(`${API}/api/cart/update`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${S.authToken}`
+      },
+      body: JSON.stringify({ game, set_slug: slug, card_number: cardId, grading, quantity })
+    });
+    await loadCart();
+    // Reload inventory to recalculate available stock
+    await loadInventory();
+  } catch (err) {
+    console.error('Update cart error:', err);
+  }
+}
+
+function updateCartCount() {
+  E.cartCount.textContent = S.cart.size;
+  E.cartCount.style.display = S.cart.size > 0 ? 'block' : 'none';
+}
+
+function updateStockDisplay(game, slug, cardId, grading) {
+  // Find and update the table row for this item
+  const rowId = `${game}-${slug}-${cardId}-${grading}`;
+  const row = E.saleTbody.querySelector(`[data-card-id="${rowId}"]`);
+  if (row) {
+    const item = S.adminInventory.find(i => i.game === game && i.set_slug === slug && i.card_number === cardId && i.grading === grading);
+    if (item) {
+      const stockCell = row.querySelector('.td-stock');
+      if (stockCell) {
+        stockCell.textContent = item.available_stock;
+      }
+    }
+  }
+}
+
+function renderCartUI() {
+  const items = Array.from(S.cart.values());
+  let total = 0;
+
+  if (items.length === 0) {
+    E.cartList.innerHTML = '<p style="text-align:center;color:var(--muted)">Your cart is empty</p>';
+  } else {
+    E.cartList.innerHTML = items.map(item => {
+      const price = item.price_cents || 0;
+      const gradingLabel = item.grading === 0 ? 'Ungraded' : `Grade ${item.grading}`;
+      total += price * item.quantity;
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:1rem;border-bottom:1px solid var(--color-border)">
+          <div>
+            <div style="font-weight:500">${item.game} - ${item.set_slug}</div>
+            <div style="font-size:var(--text-sm);color:var(--muted)">Card #${item.card_number} ${gradingLabel}</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:1rem">
+            <input type="number" min="1" value="${item.quantity}" class="cart-qty-input" data-game="${item.game}" data-slug="${item.set_slug}" data-card="${item.card_number}" data-grading="${item.grading}" style="width:50px;padding:4px" />
+            <span style="min-width:60px;text-align:right">$${(price * item.quantity / 100).toFixed(2)}</span>
+            <button class="btn-remove-cart" data-game="${item.game}" data-slug="${item.set_slug}" data-card="${item.card_number}" data-grading="${item.grading}" style="background:none;border:none;color:var(--muted);cursor:pointer">✕</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  E.cartTotal.textContent = '$' + (total / 100).toFixed(2);
+}
+
+// ── Admin Inventory Modal ─────────────────────────────────────────────────
+
+async function loadInventory() {
+  try {
+    // Load public on-sale inventory (no auth required)
+    const res = await fetch(`${API}/api/inventory`);
+    const items = await res.json();
+    // Mark sealed products based on card name
+    S.adminInventory = Array.isArray(items) ? items.map(item => ({
+      ...item,
+      sealed: isSealedProduct(item.card_name || '')
+    })) : [];
+
+    // Fetch cards for each game/set combo and attach to inventory items
+    const combos = new Set(items.map(i => `${i.game}|${i.set_slug}`));
+    const cardsByKey = new Map(); // (game|slug|card_number) -> card object
+
+    for (const combo of combos) {
+      const [game, slug] = combo.split('|');
+      try {
+        const setRes = await fetch(`${API}/api/set?slug=${encodeURIComponent(slug)}&pages=5`);
+        const setData = await setRes.json();
+        if (setData.cards) {
+          for (const card of setData.cards) {
+            // Store by both card.id and card.number to handle different ID formats
+            const key1 = `${game}|${slug}|${card.id}`;
+            const key2 = `${game}|${slug}|${card.number}`;
+            cardsByKey.set(key1, card);
+            if (card.number) cardsByKey.set(key2, card);
+            // Also cache for normal lookups
+            S.cardCache.set(key1, card);
+          }
+        }
+      } catch (err) {
+        // Continue if one set fails to load
+      }
+    }
+
+    // Attach card data to inventory items
+    for (const item of S.adminInventory) {
+      const key = `${item.game}|${item.set_slug}|${item.card_number}`;
+      item.cardData = cardsByKey.get(key);
+      // Fallback: try matching by name if ID doesn't match (for legacy inventory items)
+      if (!item.cardData && item.card_name) {
+        const [game, slug] = key.split('|');
+        const gameSlugKey = `${game}|${slug}`;
+        for (const [k, card] of cardsByKey) {
+          if (k.startsWith(gameSlugKey) && card.name === item.card_name) {
+            item.cardData = card;
+            break;
+          }
+        }
+      }
+    }
+
+    updateInvItemCount();
+  } catch (err) {
+    S.adminInventory = [];
+  }
+}
+
+function isSealedProduct(cardName) {
+  const sealedPatterns = [
+    /\b(booster\s+box|booster\s+case|booster\s+display|booster\s+pack|blister|starter\s+(set|deck)|theme\s+deck|display\s+box|collector('s)?\s+box|elite\s+trainer\s+box|etb|fat\s+pack|bundle)\b/i
+  ];
+  return sealedPatterns.some(pattern => pattern.test(cardName));
+}
+
+function updateInvItemCount() {
+  const count = (S.adminInventory || []).length;
+  E.invItemCount.textContent = count;
+  E.invItemCount.style.display = count > 0 ? 'block' : 'none';
+}
+
+async function enterInventoryView() {
+  // Admin only
+  if (!S.isAdmin) {
+    alert('Inventory management is admin-only.');
+    return;
+  }
+
+  E.stateInventoryView.style.display = 'flex';
+
+  // Show inventory indicator in sidebar
+  if (E.sidebarTitle) E.sidebarTitle.textContent = 'INVENTORY';
+
+  // Reload inventory to get latest items added after page load
+  await loadInventory();
+  renderInventoryTable();
+  showState('inventory-view');
+  pushState();
+}
+
+function exitInventoryView() {
+  E.stateInventoryView.style.display = 'none';
+
+  // Restore sidebar title
+  if (E.sidebarTitle) E.sidebarTitle.textContent = 'Sets';
+
+  showState('table');
+  pushState();
+}
+
+function renderInventoryTable() {
+  const items = S.adminInventory || [];
+  E.inventoryTitle.textContent = `Inventory — ${items.length} Items`;
+  E.inventoryTbody.innerHTML = '';
+
+  if (items.length === 0) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="8" style="text-align:center;padding:2rem;color:var(--muted)">No inventory items</td>`;
+    E.inventoryTbody.appendChild(tr);
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  items.forEach(item => {
+    const gradingLabel = item.grading === 0 ? 'Ungraded' : item.grading === 9 ? 'Grade 9' : 'PSA 10';
+    const price = (item.price_cents / 100).toFixed(2);
+    // Use attached cardData or fall back to cache lookup
+    const card = item.cardData || S.cardCache.get(`${item.game}|${item.set_slug}|${item.card_number}`);
+    const imgHtml = card?.img
+      ? `<img class="card-thumb" src="${escA(card.img)}" alt="${escA(item.card_name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>📦</div>'">`
+      : `<div class="card-thumb-ph">📦</div>`;
+
+    const tr = document.createElement('tr');
+    tr.className = 'inventory-row';
+    tr.dataset.game = item.game;
+    tr.dataset.slug = item.set_slug;
+    tr.dataset.card = item.card_number;
+    tr.dataset.grading = item.grading;
+    tr.innerHTML = `
+      <td class="td-img">${imgHtml}</td>
+      <td class="td-name">${esc(item.card_name || `Card #${item.card_number}`)}</td>
+      <td class="td-name">#${esc(item.card_number)}</td>
+      <td class="td-name">${esc(item.set_slug)}</td>
+      <td class="td-price">${esc(gradingLabel)}</td>
+      <td class="td-price"><span class="sov-price">$${price}</span></td>
+      <td class="td-price">${item.quantity_available}</td>
+      <td class="td-action"><button class="btn-inv-edit" data-game="${escA(item.game)}" data-slug="${escA(item.set_slug)}" data-card="${escA(item.card_number)}" data-grading="${item.grading}">✎</button></td>`;
+    frag.appendChild(tr);
+  });
+  E.inventoryTbody.appendChild(frag);
+}
 
 init();
 
@@ -1841,6 +2101,123 @@ function closeGameDropdown() {
   E.gameDropdownMenu.style.display = 'none';
   E.gameDropdownToggle.setAttribute('aria-expanded', 'false');
 }
+
+// ── Auth & Cart Event Listeners ────────────────────────────────────────
+
+E.btnAuth.addEventListener('click', () => {
+  if (S.userId) {
+    clearAuthToken();
+    closeCartModal();
+    exitInventoryView();
+  } else {
+    openAuthModal();
+  }
+});
+
+E.btnAuthLogin.addEventListener('click', login);
+E.btnAuthRegister.addEventListener('click', register);
+
+E.authEmail.addEventListener('keyup', e => {
+  if (e.key === 'Enter') login();
+});
+E.authPassword.addEventListener('keyup', e => {
+  if (e.key === 'Enter') E.btnAuthLogin.click();
+});
+
+E.authModalClose.addEventListener('click', closeAuthModal);
+E.authModalBackdrop.addEventListener('click', closeAuthModal);
+
+E.btnCart.addEventListener('click', openCartModal);
+E.cartModalClose.addEventListener('click', closeCartModal);
+E.cartModalBackdrop.addEventListener('click', closeCartModal);
+
+E.btnInventory.addEventListener('click', enterInventoryView);
+
+E.inventoryTbody.addEventListener('click', async e => {
+  const btn = e.target.closest('.btn-inv-edit');
+  if (!btn) return;
+  const { game, slug, card, grading } = btn.dataset;
+  const item = (S.adminInventory || []).find(i => i.game === game && i.set_slug === slug && i.card_number === card && String(i.grading) === grading);
+
+  // Open inventory popover for this item
+  if (item) {
+    const cardObj = {
+      name: item.card_name,
+      id: item.card_number
+    };
+    // Set grading selector to match the item
+    E.invGrading.value = String(item.grading);
+    openInvPopover(cardObj, btn, game, slug);
+  } else {
+    // Fallback: try to open with just the button data
+    const cardObj = {
+      name: btn.dataset.name || 'Unknown Card',
+      id: card
+    };
+    E.invGrading.value = String(grading);
+    openInvPopover(cardObj, btn, game, slug);
+  }
+});
+
+E.cartList.addEventListener('change', e => {
+  const input = e.target.closest('.cart-qty-input');
+  if (!input) return;
+  const game = input.dataset.game;
+  const slug = input.dataset.slug;
+  const cardId = input.dataset.card;
+  const grading = Number(input.dataset.grading);
+  const quantity = Math.max(1, Number(input.value));
+  updateCartItem(game, slug, cardId, grading, quantity);
+});
+
+E.cartList.addEventListener('click', e => {
+  const btn = e.target.closest('.btn-remove-cart');
+  if (!btn) return;
+  removeFromCart(btn.dataset.game, btn.dataset.slug, btn.dataset.card, Number(btn.dataset.grading));
+});
+
+E.btnCheckout.addEventListener('click', async () => {
+  if (!S.authToken || S.cart.size === 0) return;
+
+  E.btnCheckout.disabled = true;
+  E.btnCheckout.textContent = 'Processing...';
+
+  try {
+    const items = Array.from(S.cart.values()).map(item => ({
+      game: item.game,
+      set_slug: item.set_slug,
+      card_number: item.card_number,
+      grading: item.grading
+    }));
+
+    const res = await fetch(`${API}/api/checkout/session`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${S.authToken}`
+      },
+      body: JSON.stringify({ items })
+    });
+
+    if (!res.ok) throw new Error('Failed to create checkout session');
+    const data = await res.json();
+
+    // Redirect to Stripe checkout
+    if (data.url) {
+      window.location.href = data.url;
+    }
+  } catch (err) {
+    alert('Checkout failed: ' + err.message);
+    E.btnCheckout.disabled = false;
+    E.btnCheckout.textContent = 'Checkout';
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && E.authModal.style.display !== 'none') closeAuthModal();
+  if (e.key === 'Escape' && E.cartModal.style.display !== 'none') closeCartModal();
+  if (e.key === 'Escape' && E.inventoryModal.style.display !== 'none') closeInventoryModal();
+});
 
 E.sidebarToggle.addEventListener('click', () => {
   E.sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
@@ -1895,9 +2272,14 @@ function openInvPopover(card, triggerBtn, game, slug) {
   invCurrentGame = game || S.game;
   invCurrentSlug = slug || S.slug;
   E.invCardName.textContent = card.name;
-  refreshInvQtyRows();
   E.invStatus.textContent = '';
-  E.invQtyInput.value = '1';
+  updateInvPopoverStock();
+  if (S.isAdmin) {
+    E.invAdminSection.style.display = 'block';
+    updateInvAdminFields();
+  } else {
+    E.invAdminSection.style.display = 'none';
+  }
   const rect = triggerBtn.getBoundingClientRect();
   E.invPopover.style.display = 'block';
   const top = rect.bottom + 6;
@@ -1914,120 +2296,116 @@ function closeInvPopover() {
   invCurrentSlug = null;
 }
 
-function refreshInvQtyRows() {
+function updateInvPopoverStock() {
   if (!invCurrentCard) return;
-  const labels = { 0: 'Ungraded', 9: 'Grade 9', 10: 'PSA 10' };
-  const gradings = [0, 9, 10];
-  let hasQty = false;
-
-  gradings.forEach(g => {
-    const qty = S.inventory.get(invKey(invCurrentGame, invCurrentSlug, invCurrentCard.id, g)) || 0;
-    const rowId = `inv-qty-row-${g}`;
-    let row = document.getElementById(rowId);
-
-    if (qty > 0) {
-      hasQty = true;
-      if (!row) {
-        row = document.createElement('div');
-        row.id = rowId;
-        row.className = 'inv-qty-row';
-        row.innerHTML = `<span>${labels[g]}</span><span class="inv-qty-val"></span>`;
-        E.invQtyRows.appendChild(row);
-      }
-      // Update qty value only
-      const valSpan = row.querySelector('.inv-qty-val');
-      if (valSpan) valSpan.textContent = qty;
+  const grading = parseInt(E.invGrading.value, 10);
+  const key = storeKey(invCurrentGame, invCurrentSlug, invCurrentCard.id, grading);
+  const item = S.storeInventory.get(key);
+  const inStock = item && item.quantity_available > 0;
+  E.btnInvCart.style.display = inStock ? 'block' : 'none';
+  if (E.invStockStatus) {
+    if (inStock) {
+      const price = item.price_cents ? `$${(item.price_cents / 100).toFixed(2)}` : 'Price TBD';
+      E.invStockStatus.textContent = `In stock · ${price}`;
+      E.invStockStatus.style.color = 'var(--color-success, #4ade80)';
     } else {
-      if (row) row.remove();
+      E.invStockStatus.textContent = 'Out of stock';
+      E.invStockStatus.style.color = 'var(--muted)';
     }
-  });
-
-  // Show empty message only if no quantities exist
-  if (!hasQty && !E.invQtyRows.querySelector('.inv-qty-empty')) {
-    const col = getActiveCollection();
-    const colName = col?.name || 'Collection';
-    const emptyDiv = document.createElement('div');
-    emptyDiv.className = 'inv-qty-empty';
-    emptyDiv.textContent = `Not in ${colName}`;
-    E.invQtyRows.appendChild(emptyDiv);
-  } else if (hasQty) {
-    const empty = E.invQtyRows.querySelector('.inv-qty-empty');
-    if (empty) empty.remove();
   }
 }
 
-function invAction(action) {
+function updateInvAdminFields() {
   if (!invCurrentCard) return;
-  const grading = Number(E.invGrading.value);
-  const qty = parseInt(E.invQtyInput.value, 10);
-  if (!qty || qty < 1) {
-    E.invStatus.textContent = 'Enter a valid quantity.';
-    return;
+  const grading = parseInt(E.invGrading.value, 10);
+  // Look in adminInventory first (inventory view), then storeInventory (sale view)
+  let item = (S.adminInventory || []).find(i =>
+    i.game === invCurrentGame && i.set_slug === invCurrentSlug &&
+    i.card_number === invCurrentCard.id && i.grading === grading
+  );
+  if (!item) {
+    const key = storeKey(invCurrentGame, invCurrentSlug, invCurrentCard.id, grading);
+    item = S.storeInventory.get(key);
   }
-
-  const key = invKey(invCurrentGame, invCurrentSlug, invCurrentCard.id, grading);
-  const current = S.inventory.get(key) || 0;
-  let newQty = current;
-
-  if (action === 'add') newQty = current + qty;
-  else if (action === 'remove') {
-    if (current < qty) {
-      E.invStatus.textContent = 'Not enough in inventory.';
-      return;
-    }
-    newQty = current - qty;
-  } else if (action === 'set') newQty = qty;
-
-  if (newQty > 0) {
-    S.inventory.set(key, newQty);
-  } else {
-    S.inventory.delete(key);
-  }
-
-  // Mark as unsynced
-  S.inventorySynced.delete(key);
-  saveCollectionsToStorage();
-
-  // Populate card cache for owned products view
-  if (invCurrentCard && invCurrentGame && invCurrentSlug) {
-    const cacheKey = `${invCurrentGame}|${invCurrentSlug}|${invCurrentCard.id}`;
-    S.cardCache.set(cacheKey, invCurrentCard);
-    saveProductsToStorage();
-  }
-
-  E.invStatus.textContent = 'Saved locally. Sync to blockchain →';
-  refreshInvQtyRows();
-
-  // Update owned products table if visible (rebuild entire table to keep totals accurate)
-  if (S.filterOwned) {
-    // Check if collection is now empty; if so, turn off owned view
-    if (S.inventory.size === 0) {
-      S.filterOwned = false;
-      E.filterOwnedBtn.setAttribute('aria-pressed', 'false');
-      E.filterOwnedBtn.classList.remove('active');
-      renderCards();
-    } else {
-      // Rebuild owned products table with updated totals
-      renderOwnedProducts();
-    }
-  }
-
-  if (invCurrentSlug && S.allCards.length) renderCards();
-
-  // Show sync button more prominently
-  if (E.btnSyncInv) {
-    E.btnSyncInv.classList.add('unsync');
-  }
+  if (E.invAdminQty) E.invAdminQty.value = item ? item.quantity_available : 0;
+  if (E.invAdminPrice) E.invAdminPrice.value = item ? (item.price_cents / 100).toFixed(2) : '0.00';
 }
 
-E.btnInvAdd.addEventListener('click', () => invAction('add'));
-E.btnInvRemove.addEventListener('click', () => invAction('remove'));
-E.btnInvSet.addEventListener('click', () => invAction('set'));
-E.invClose.addEventListener('click', closeInvPopover);
-
-E.btnSyncInv?.addEventListener('click', () => {
-  if (!E.btnSyncInv.disabled) syncInventoryToContract();
+E.invGrading.addEventListener('change', () => {
+  updateInvPopoverStock();
+  if (S.isAdmin) updateInvAdminFields();
 });
+
+E.btnInvCart.addEventListener('click', () => {
+  if (!invCurrentCard) return;
+  const grading = parseInt(E.invGrading.value, 10);
+  addToCart(invCurrentGame, invCurrentSlug, invCurrentCard.id, grading, 1);
+  closeInvPopover();
+});
+
+E.btnInvAdminUpdate?.addEventListener('click', async () => {
+  if (!invCurrentCard) return;
+  const grading = parseInt(E.invGrading.value, 10);
+  const qty = parseInt(E.invAdminQty.value, 10) || 0;
+  const price = Math.round(parseFloat(E.invAdminPrice.value || '0') * 100);
+  try {
+    const res = await fetch(`${API}/api/admin/inventory/add`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${S.authToken}`
+      },
+      body: JSON.stringify({
+        game: invCurrentGame,
+        set_slug: invCurrentSlug,
+        card_number: invCurrentCard.id,
+        card_name: invCurrentCard.name,
+        grading,
+        quantity_available: qty,
+        price_cents: price
+      })
+    });
+    if (!res.ok) throw new Error('Failed');
+    await loadStoreInventory(invCurrentGame, invCurrentSlug);
+    await loadInventory();
+    updateInvPopoverStock();
+    updateInvAdminFields();
+    if (E.stateInventoryView.style.display !== 'none') renderInventoryTable();
+    E.invStatus.textContent = 'Stock updated.';
+  } catch (err) {
+    E.invStatus.textContent = 'Error: ' + err.message;
+  }
+});
+
+E.btnInvAdminDelete?.addEventListener('click', async () => {
+  if (!invCurrentCard) return;
+  if (!confirm('Are you sure you want to permanently delete this inventory item? This cannot be undone.')) return;
+  const grading = parseInt(E.invGrading.value, 10);
+  try {
+    const res = await fetch(`${API}/api/admin/inventory/remove`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${S.authToken}`
+      },
+      body: JSON.stringify({
+        game: invCurrentGame,
+        set_slug: invCurrentSlug,
+        card_number: invCurrentCard.id,
+        grading
+      })
+    });
+    if (!res.ok) throw new Error('Failed to delete');
+    await loadStoreInventory(invCurrentGame, invCurrentSlug);
+    await loadInventory();
+    if (E.stateInventoryView.style.display !== 'none') renderInventoryTable();
+    closeInvPopover();
+  } catch (err) {
+    E.invStatus.textContent = 'Error: ' + err.message;
+  }
+});
+
+E.invClose.addEventListener('click', closeInvPopover);
 
 E.tbody.addEventListener('click', e => {
   const btn = e.target.closest('.btn-dots');
@@ -2041,24 +2419,9 @@ E.tbody.addEventListener('click', e => {
   }
 });
 
-E.ownedProductsTbody.addEventListener('click', e => {
-  const btn = e.target.closest('.btn-dots');
-  if (!btn) return;
-  const cardId = btn.dataset.cardId;
-  const game = btn.dataset.game;
-  const slug = btn.dataset.slug;
-  const card = Array.from(S.cardCache.values()).find(c => c.id === cardId);
-  if (!card) return;
-  if (E.invPopover.style.display !== 'none' && invCurrentCard?.id === card.id) {
-    closeInvPopover();
-  } else {
-    openInvPopover(card, btn, game, slug);
-  }
-});
-
 document.addEventListener('click', e => {
   if (!E.invPopover || E.invPopover.style.display === 'none') return;
-  if (!E.invPopover.contains(e.target) && !e.target.closest('.btn-dots')) {
+  if (!E.invPopover.contains(e.target) && !e.target.closest('.btn-dots') && !e.target.closest('.btn-inv-edit')) {
     closeInvPopover();
   }
 });

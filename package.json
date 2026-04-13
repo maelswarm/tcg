@@ -2,5 +2,11 @@
   "name": "tcg-price-tracker",
   "version": "1.0.0",
   "main": "server/server.js",
-  "dependencies": {}
+  "dependencies": {
+    "pg": "^8.11.0",
+    "stripe": "^14.0.0",
+    "bcrypt": "^5.1.1",
+    "jsonwebtoken": "^9.0.0",
+    "dotenv": "^16.0.0"
+  }
 }
