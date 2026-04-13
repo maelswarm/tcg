@@ -4,6 +4,10 @@ const https = require('https');
 const url = require('url');
 const fs = require('fs');
 const nodePath = require('path');
+const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+require('dotenv').config({ path: nodePath.join(__dirname, '..', '.env') });
 
 const PORT = 3847;
 const SITE_DIR = nodePath.join(__dirname, '..', 'site');
@@ -15,6 +19,29 @@ const MIME = {
   '.ico': 'image/x-icon',
   '.json': 'application/json',
 };
+
+// ── Database & Auth ───────────────────────────────────────────────────────
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://localhost/tcg_tracker'
+});
+
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || 'admin-key-change-in-production';
+
+// JWT token verification middleware
+async function verifyAuth(token) {
+  try {
+    return jwt.verify(token, JWT_SECRET);
+  } catch (err) {
+    return null;
+  }
+}
+
+// Extract auth token from Authorization header
+function getAuthToken(req) {
+  const authHeader = req.headers.authorization || '';
+  return authHeader.replace('Bearer ', '');
+}
 
 // ── Game Data ─────────────────────────────────────────────────────────────
 const GAME_DATA = {
@@ -6727,16 +6754,164 @@ async function fetchSetPages(slug) {
   return result;
 }
 
+async function fetchSetPagesFresh(slug) {
+  const baseUrl = `https://www.pricecharting.com/console/${slug}`;
+  const allCards = [];
+  let html1;
+  try {
+    html1 = await httpGet(baseUrl);
+  } catch (err) {
+    const cached = cardCache.get(slug);
+    if (cached) return { ...cached.data, fromCache: true, cachedAt: cached.fetchedAt };
+    return { error: err.message, cards: [], count: 0 };
+  }
+
+  const titleMatch = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html1);
+  const title = titleMatch ? htmlDecode(titleMatch[1].replace(/<[^>]+>/g, '').trim()) : slug;
+  const page1Cards = parseRows(html1);
+  allCards.push(...page1Cards);
+
+  let nextData = parseNextCursor(html1);
+
+  let page = 2;
+  while (nextData) {
+    try {
+      const pageHtml = await httpPost(baseUrl, {
+        sort: nextData.sort || '',
+        when: nextData.when || 'none',
+        'release-date': nextData['release-date'] || '',
+        cursor: nextData.cursor,
+      });
+
+      const newCards = parseRows(pageHtml);
+
+      if (newCards.length === 0) {
+        break;
+      }
+
+      allCards.push(...newCards);
+      nextData = parseNextCursor(pageHtml);
+
+      page++;
+      await new Promise(r => setTimeout(r, 500));
+    } catch (err) {
+      break;
+    }
+  }
+
+  const sealedItems = allCards.filter(c => c.sealed);
+  const result = { slug, title, cards: allCards, count: allCards.length, sealedCount: sealedItems.length, source: baseUrl };
+  if (allCards.length > 0) {
+    cardCache.set(slug, { data: result, fetchedAt: Date.now() });
+  }
+  return result;
+}
+
 // ── HTTP Server ────────────────────────────────────────────────────────────
+// Helper to read POST body
+async function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   const parsed = url.parse(req.url, true);
   const reqPath = parsed.pathname;
   const query = parsed.query;
+
+  // ── Auth Routes ────────────────────────────────────────────────────────
+
+  // POST /api/auth/register
+  if (reqPath === '/api/auth/register' && req.method === 'POST') {
+    try {
+      const { email, password } = await readBody(req);
+      if (!email || !password) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Email and password required' }));
+        return;
+      }
+
+      // Hash password
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      // Insert user
+      const result = await pool.query(
+        'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, is_admin',
+        [email, passwordHash]
+      );
+
+      const userId = result.rows[0].id;
+      const isAdmin = result.rows[0].is_admin;
+      const token = jwt.sign({ userId, email, isAdmin }, JWT_SECRET, { expiresIn: '7d' });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ token, userId, isAdmin }));
+    } catch (err) {
+      if (err.code === '23505') { // Unique constraint error
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Email already registered' }));
+      } else {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    }
+    return;
+  }
+
+  // POST /api/auth/login
+  if (reqPath === '/api/auth/login' && req.method === 'POST') {
+    try {
+      const { email, password } = await readBody(req);
+      if (!email || !password) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Email and password required' }));
+        return;
+      }
+
+      // Find user
+      const result = await pool.query('SELECT id, password_hash, is_admin FROM users WHERE email = $1', [email]);
+      if (result.rows.length === 0) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid email or password' }));
+        return;
+      }
+
+      const user = result.rows[0];
+
+      // Verify password
+      const passwordMatch = await bcrypt.compare(password, user.password_hash);
+      if (!passwordMatch) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid email or password' }));
+        return;
+      }
+
+      const isAdmin = user.is_admin;
+      const token = jwt.sign({ userId: user.id, email, isAdmin }, JWT_SECRET, { expiresIn: '7d' });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ token, userId: user.id, isAdmin }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
 
   // ── /api/games ─────────────────────────────────────────────────────────
   if (reqPath === '/api/games') {
@@ -6759,11 +6934,9 @@ const server = http.createServer(async (req, res) => {
   if (reqPath === '/api/set') {
     const slug = query.slug;
     if (!slug) { res.writeHead(400); res.end(JSON.stringify({ error: 'slug required' })); return; }
-    if (query.force === 'true') {
-      cardCache.delete(slug);
-    }
+    const force = query.force === 'true';
     try {
-      const data = await fetchSetPages(slug);
+      const data = force ? await fetchSetPagesFresh(slug) : await fetchSetPages(slug);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(data));
     } catch (err) {
@@ -6811,6 +6984,432 @@ const server = http.createServer(async (req, res) => {
     })();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'refreshing', game: gameKey }));
+    return;
+  }
+
+  // ── Cart Routes ────────────────────────────────────────────────────────
+
+  // GET /api/cart - get user's cart
+  if (reqPath === '/api/cart' && req.method === 'GET') {
+    try {
+      const token = getAuthToken(req);
+      const auth = await verifyAuth(token);
+      if (!auth) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const result = await pool.query(
+        'SELECT * FROM cart_items WHERE user_id = $1',
+        [auth.userId]
+      );
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.rows));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // POST /api/cart/add - add card to cart
+  if (reqPath === '/api/cart/add' && req.method === 'POST') {
+    try {
+      const token = getAuthToken(req);
+      const auth = await verifyAuth(token);
+      if (!auth) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const { game, set_slug, card_number, grading, quantity } = await readBody(req);
+      if (!game || !set_slug || !card_number || grading === undefined || !quantity) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required fields' }));
+        return;
+      }
+
+      // Upsert into cart (insert or update)
+      const result = await pool.query(
+        `INSERT INTO cart_items (user_id, game, set_slug, card_number, grading, quantity)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (user_id, game, set_slug, card_number, grading)
+         DO UPDATE SET quantity = cart_items.quantity + $6
+         RETURNING *`,
+        [auth.userId, game, set_slug, card_number, grading, quantity]
+      );
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.rows[0]));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // DELETE /api/cart/remove - remove card from cart
+  if (reqPath === '/api/cart/remove' && req.method === 'DELETE') {
+    try {
+      const token = getAuthToken(req);
+      const auth = await verifyAuth(token);
+      if (!auth) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const { game, set_slug, card_number, grading } = await readBody(req);
+      if (!game || !set_slug || !card_number || grading === undefined) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required fields' }));
+        return;
+      }
+
+      await pool.query(
+        'DELETE FROM cart_items WHERE user_id = $1 AND game = $2 AND set_slug = $3 AND card_number = $4 AND grading = $5',
+        [auth.userId, game, set_slug, card_number, grading]
+      );
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // PUT /api/cart/update - update cart item quantity
+  if (reqPath === '/api/cart/update' && req.method === 'PUT') {
+    try {
+      const token = getAuthToken(req);
+      const auth = await verifyAuth(token);
+      if (!auth) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const { game, set_slug, card_number, grading, quantity } = await readBody(req);
+      if (!game || !set_slug || !card_number || grading === undefined || quantity === undefined) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required fields' }));
+        return;
+      }
+
+      const result = await pool.query(
+        'UPDATE cart_items SET quantity = $1 WHERE user_id = $2 AND game = $3 AND set_slug = $4 AND card_number = $5 AND grading = $6 RETURNING *',
+        [quantity, auth.userId, game, set_slug, card_number, grading]
+      );
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.rows[0] || { error: 'Not found' }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── Checkout Routes ────────────────────────────────────────────────────
+
+  // POST /api/checkout/session - create Stripe checkout session
+  if (reqPath === '/api/checkout/session' && req.method === 'POST') {
+    try {
+      const token = getAuthToken(req);
+      const user = await verifyAuth(token);
+      if (!user) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const body = await readBody(req);
+      const { items } = JSON.parse(body);
+      if (!items || !Array.isArray(items)) throw new Error('items required');
+
+      // Verify cart items belong to user and calculate total
+      const cartResult = await pool.query('SELECT * FROM cart_items WHERE user_id = $1', [user.id]);
+      let total = 0;
+      const orderItems = [];
+
+      for (const item of items) {
+        const cartItem = cartResult.rows.find(c =>
+          c.game === item.game &&
+          c.set_slug === item.set_slug &&
+          c.card_number === item.card_number &&
+          c.grading === item.grading
+        );
+        if (!cartItem) throw new Error('Cart item not found');
+
+        const invResult = await pool.query(
+          'SELECT * FROM inventory WHERE game=$1 AND set_slug=$2 AND card_number=$3 AND grading=$4',
+          [item.game, item.set_slug, item.card_number, item.grading]
+        );
+        if (!invResult.rows[0]) throw new Error('Inventory item not found');
+
+        const invItem = invResult.rows[0];
+        total += invItem.price_cents * cartItem.quantity;
+        orderItems.push({
+          game: item.game,
+          set_slug: item.set_slug,
+          card_number: item.card_number,
+          grading: item.grading,
+          quantity: cartItem.quantity,
+          price_cents: invItem.price_cents
+        });
+      }
+
+      // Create order in database
+      const orderResult = await pool.query(
+        'INSERT INTO orders (user_id, status, total_cents) VALUES ($1, $2, $3) RETURNING id',
+        [user.id, 'pending', total]
+      );
+      const orderId = orderResult.rows[0].id;
+
+      // Insert order items
+      for (const item of orderItems) {
+        await pool.query(
+          'INSERT INTO order_items (order_id, game, set_slug, card_number, grading, quantity, price_cents) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [orderId, item.game, item.set_slug, item.card_number, item.grading, item.quantity, item.price_cents]
+        );
+      }
+
+      // Create Stripe session
+      const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ['card'],
+        line_items: orderItems.map(item => ({
+          price_data: {
+            currency: 'usd',
+            product_data: {
+              name: `${item.game} - ${item.set_slug} #${item.card_number}${item.grading ? ` Grade ${item.grading}` : ''}`
+            },
+            unit_amount: item.price_cents
+          },
+          quantity: item.quantity
+        })),
+        mode: 'payment',
+        success_url: `${process.env.BASE_URL || 'http://localhost:3847'}/checkout?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.BASE_URL || 'http://localhost:3847'}`,
+        metadata: { orderId: String(orderId) }
+      });
+
+      // Update order with session ID
+      await pool.query('UPDATE orders SET stripe_session_id = $1 WHERE id = $2', [session.id, orderId]);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sessionId: session.id, url: session.url }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // POST /api/checkout/webhook - Stripe webhook
+  if (reqPath === '/api/checkout/webhook' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+      const sig = req.headers['stripe-signature'];
+      const event = stripe.webhooks.constructEvent(
+        body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+
+      if (event.type === 'checkout.session.completed') {
+        const session = event.data.object;
+        const orderId = parseInt(session.metadata.orderId, 10);
+
+        // Get order details
+        const orderResult = await pool.query('SELECT * FROM orders WHERE id = $1', [orderId]);
+        if (!orderResult.rows[0]) throw new Error('Order not found');
+
+        const order = orderResult.rows[0];
+
+        // Get order items
+        const itemsResult = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [orderId]);
+
+        // Decrease inventory for each item
+        for (const item of itemsResult.rows) {
+          await pool.query(
+            'UPDATE inventory SET quantity_available = quantity_available - $1 WHERE game=$2 AND set_slug=$3 AND card_number=$4 AND grading=$5',
+            [item.quantity, item.game, item.set_slug, item.card_number, item.grading]
+          );
+        }
+
+        // Mark order as completed
+        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', ['completed', orderId]);
+
+        // Clear user's cart
+        const userId = order.user_id;
+        await pool.query('DELETE FROM cart_items WHERE user_id = $1', [userId]);
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ received: true }));
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── Public Store Inventory ────────────────────────────────────────────
+
+  // GET /api/store-inventory?game=X&set_slug=Y - public stock check for a set
+  if (reqPath === '/api/store-inventory' && req.method === 'GET') {
+    try {
+      const { game, set_slug } = query;
+      if (!game || !set_slug) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'game and set_slug required' }));
+        return;
+      }
+      const result = await pool.query(
+        'SELECT card_number, grading, quantity_available, price_cents FROM inventory WHERE game = $1 AND set_slug = $2 AND quantity_available > 0',
+        [game, set_slug]
+      );
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.rows));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── Admin Auth Helper ─────────────────────────────────────────────────
+  async function isAdminRequest(req) {
+    const apiKey = req.headers['x-api-key'] || '';
+    if (apiKey === ADMIN_API_KEY) return true;
+    try {
+      const token = getAuthToken(req);
+      if (!token) return false;
+      const payload = await verifyAuth(token);
+      return payload.isAdmin === true;
+    } catch { return false; }
+  }
+
+  // ── Public Inventory (On Sale) ────────────────────────────────────────────
+
+  // GET /api/inventory - list all on-sale items with calculated available stock
+  if (reqPath === '/api/inventory' && req.method === 'GET') {
+    try {
+      const result = await pool.query(`
+        SELECT
+          i.*,
+          COALESCE(SUM(c.quantity), 0) as reserved_qty,
+          i.quantity_available - COALESCE(SUM(c.quantity), 0) as available_stock
+        FROM inventory i
+        LEFT JOIN cart_items c ON (
+          i.game = c.game AND
+          i.set_slug = c.set_slug AND
+          i.card_number = c.card_number AND
+          i.grading = c.grading
+        )
+        WHERE i.price_cents > 0
+        GROUP BY i.id, i.game, i.set_slug, i.card_number, i.grading, i.quantity_available, i.price_cents
+        ORDER BY i.game, i.set_slug, i.card_number
+      `);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.rows));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── Admin Inventory Routes ────────────────────────────────────────────
+
+  // GET /api/admin/inventory - list all inventory
+  if (reqPath === '/api/admin/inventory' && req.method === 'GET') {
+    try {
+      if (!await isAdminRequest(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const result = await pool.query('SELECT * FROM inventory ORDER BY game, set_slug, card_number');
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.rows));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // POST /api/admin/inventory/add - add/update inventory item
+  if (reqPath === '/api/admin/inventory/add' && req.method === 'POST') {
+    try {
+      if (!await isAdminRequest(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const { game, set_slug, card_number, grading, quantity_available, price_cents, card_name } = await readBody(req);
+      if (!game || !set_slug || !card_number || grading === undefined) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required fields' }));
+        return;
+      }
+
+      const result = await pool.query(
+        `INSERT INTO inventory (game, set_slug, card_number, grading, quantity_available, price_cents, card_name)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (game, set_slug, card_number, grading)
+         DO UPDATE SET quantity_available = $5, price_cents = $6, card_name = $7
+         RETURNING *`,
+        [game, set_slug, card_number, grading, quantity_available || 0, price_cents || 0, card_name || '']
+      );
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.rows[0]));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // DELETE /api/admin/inventory/remove - remove inventory item
+  if (reqPath === '/api/admin/inventory/remove' && req.method === 'DELETE') {
+    try {
+      if (!await isAdminRequest(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const { game, set_slug, card_number, grading } = await readBody(req);
+      if (!game || !set_slug || !card_number || grading === undefined) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required fields' }));
+        return;
+      }
+
+      await pool.query(
+        'DELETE FROM inventory WHERE game = $1 AND set_slug = $2 AND card_number = $3 AND grading = $4',
+        [game, set_slug, card_number, grading]
+      );
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
     return;
   }
 
