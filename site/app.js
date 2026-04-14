@@ -1736,6 +1736,8 @@ async function addToCart(game, slug, cardId, grading, quantity = 1) {
     await loadCart();
     // Reload inventory to recalculate available stock
     await loadInventory();
+    // Re-render sale view if active to sync prices and stock
+    if (S.saleView) renderSaleView();
   } catch (err) {
     console.error('Add to cart error:', err);
   }
@@ -1754,8 +1756,11 @@ async function removeFromCart(game, slug, cardId, grading) {
       body: JSON.stringify({ game, set_slug: slug, card_number: cardId, grading })
     });
     await loadCart();
+    renderCartUI(); // Update cart display
     // Reload inventory to recalculate available stock
     await loadInventory();
+    // Re-render sale view if active to sync prices and stock
+    if (S.saleView) renderSaleView();
   } catch (err) {
     console.error('Remove from cart error:', err);
   }
@@ -1776,6 +1781,8 @@ async function updateCartItem(game, slug, cardId, grading, quantity) {
     await loadCart();
     // Reload inventory to recalculate available stock
     await loadInventory();
+    // Re-render sale view if active to sync prices and stock
+    if (S.saleView) renderSaleView();
   } catch (err) {
     console.error('Update cart error:', err);
   }

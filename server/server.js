@@ -7001,7 +7001,9 @@ const server = http.createServer(async (req, res) => {
       }
 
       const result = await pool.query(
-        'SELECT * FROM cart_items WHERE user_id = $1',
+        `SELECT c.*, COALESCE(i.price_cents, 0) as price_cents FROM cart_items c
+         LEFT JOIN inventory i ON c.game = i.game AND c.set_slug = i.set_slug AND CAST(c.card_number AS TEXT) = CAST(i.card_number AS TEXT) AND c.grading = i.grading
+         WHERE c.user_id = $1`,
         [auth.userId]
       );
 
