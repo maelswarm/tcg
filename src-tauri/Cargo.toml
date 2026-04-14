@@ -1,0 +1,30 @@
+[package]
+name = "tcg-price-tracker"
+version = "1.0.0"
+description = "TCG Price Tracker Desktop App"
+authors = []
+edition = "2021"
+
+[lib]
+name = "tcg_price_tracker_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "tcg-price-tracker"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

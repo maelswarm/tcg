@@ -7,7 +7,9 @@ const nodePath = require('path');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-require('dotenv').config({ path: nodePath.join(__dirname, '..', '.env') });
+if (!process.env.DATABASE_URL) {
+  require('dotenv').config({ path: nodePath.join(__dirname, '..', '.env') });
+}
 
 const PORT = 3847;
 const SITE_DIR = nodePath.join(__dirname, '..', 'site');

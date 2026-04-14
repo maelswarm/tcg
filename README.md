@@ -98,6 +98,76 @@ Server runs on **http://localhost:3847**
 
 ---
 
+## Desktop Application (Tauri v2)
+
+The TCG Price Tracker can also run as a standalone desktop application on Windows and macOS.
+
+### Desktop Prerequisites
+
+- **Rust** — Install from [rustup.rs](https://rustup.rs)
+  - On Windows: Install MSVC toolchain (default) and Visual Studio 2022 Build Tools with "C++ build tools" workload
+- **Node.js** v14+ (same as web version)
+- **PostgreSQL** v12+ (running locally — required for the desktop app)
+
+### Building the Desktop App
+
+```bash
+# Install Tauri and caxa
+npm install --save-dev @tauri-apps/cli@^2 caxa
+
+# Build for Windows
+npm run tauri:build
+
+# Or build and run in dev mode
+npm run tauri:dev
+```
+
+**Build outputs:**
+- **Windows**: `src-tauri/target/release/bundle/nsis/TCG Price Tracker_1.0.0_x64-setup.exe`
+- **macOS**: `src-tauri/target/release/bundle/dmg/TCG Price Tracker_1.0.0_arm64.dmg` (Apple Silicon) and `x86_64.dmg` (Intel)
+
+### Running the Desktop App
+
+1. **First run**: The desktop app will:
+   - Start the Node.js server (sidecar) automatically
+   - Load your `.env` file from the project root
+   - Wait for the server to be ready
+   - Display the app window when ready
+
+2. **Closing the app**: When you close the window, all server processes are automatically terminated
+
+3. **Configuration**: The app uses the `.env` file from your project directory. Make sure it contains:
+   ```env
+   DATABASE_URL=postgresql://user:password@localhost:5432/tcg_tracker
+   JWT_SECRET=your_jwt_secret
+   STRIPE_SECRET_KEY=sk_test_...
+   ADMIN_API_KEY=your_admin_key
+   PORT=3847
+   ```
+
+### Desktop App Platform Support
+
+- **Windows 10/11**: Full support via NSIS installer
+- **macOS 10.13+**: Full support via DMG installer (both Intel and Apple Silicon)
+  - Note: First install may require clicking "Open" in Security preferences
+
+### Troubleshooting Desktop App
+
+**App won't start / "Start the proxy server" error**
+- Ensure PostgreSQL is running
+- Check `.env` file has correct `DATABASE_URL`
+- Check port 3847 is available (not in use)
+
+**Process still running after close**
+- Desktop app automatically kills all server processes on close
+- If a process persists, manually kill: `taskkill /F /IM server-sidecar.exe`
+
+**Reinstaller fails with "Error opening file for writing"**
+- Uninstall the previous version first
+- Or run installer again — it will automatically kill any running instances
+
+---
+
 ## How to Use
 
 ### Browsing Cards
@@ -200,7 +270,16 @@ tcg-price-tracker/
 │   ├── app.js             # All frontend logic
 │   └── style.css          # Styling
 ├── server/
-│   └── server.js          # Express API server
+│   ├── server.js          # Express API server
+│   └── sidecar-entry.js   # Entry point for Tauri sidecar
+├── src-tauri/             # Tauri desktop app (Windows/macOS)
+│   ├── src/
+│   │   └── main.rs        # Tauri app setup & sidecar spawning
+│   ├── Cargo.toml         # Rust dependencies
+│   ├── tauri.conf.json    # Tauri configuration
+│   ├── capabilities/      # Permission definitions
+│   ├── binaries/          # Compiled sidecar binary
+│   └── nsis/              # Windows installer scripts
 ├── db/
 │   ├── schema.sql         # PostgreSQL schema
 │   ├── migrate.js         # Migration runner
@@ -216,6 +295,9 @@ tcg-price-tracker/
 |------|---------|
 | `site/app.js` | Frontend state, UI, cart, collections, auth token management |
 | `server/server.js` | Express routes: auth, cart, checkout, admin inventory, PriceCharting proxy |
+| `server/sidecar-entry.js` | Entry point for Tauri bundled sidecar (loads .env and starts server) |
+| `src-tauri/src/main.rs` | Tauri app setup: spawns sidecar, polls for readiness, handles process cleanup |
+| `src-tauri/tauri.conf.json` | Desktop app configuration: window settings, sidecar bundling |
 | `db/schema.sql` | PostgreSQL tables & indexes |
 | `db/migrate.js` | One-time setup (creates columns, marks first user as admin) |
 

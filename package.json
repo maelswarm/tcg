@@ -2,11 +2,25 @@
   "name": "tcg-price-tracker",
   "version": "1.0.0",
   "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "build:sidecar:win": "npx caxa --input \".\" --output \"src-tauri/binaries/server-sidecar-x86_64-pc-windows-msvc.exe\" --exclude \"src-tauri\" --exclude \".git\" --exclude \"*.md\" -- \"{{caxa}}/node_modules/.bin/node\" \"{{caxa}}/server/sidecar-entry.js\"",
+    "build:sidecar:mac-intel": "npx caxa --input \".\" --output \"src-tauri/binaries/server-sidecar-x86_64-apple-darwin\" --exclude \"src-tauri\" --exclude \".git\" --exclude \"*.md\" -- \"{{caxa}}/node_modules/.bin/node\" \"{{caxa}}/server/sidecar-entry.js\"",
+    "build:sidecar:mac-arm": "npx caxa --input \".\" --output \"src-tauri/binaries/server-sidecar-aarch64-apple-darwin\" --exclude \"src-tauri\" --exclude \".git\" --exclude \"*.md\" -- \"{{caxa}}/node_modules/.bin/node\" \"{{caxa}}/server/sidecar-entry.js\"",
+    "build:sidecar": "npm run build:sidecar:win",
+    "tauri:dev": "npm run build:sidecar && npx tauri dev",
+    "tauri:build": "npx tauri build",
+    "migrate": "node db/migrate.js"
+  },
   "dependencies": {
-    "pg": "^8.11.0",
-    "stripe": "^14.0.0",
     "bcrypt": "^5.1.1",
+    "dotenv": "^16.0.0",
     "jsonwebtoken": "^9.0.0",
-    "dotenv": "^16.0.0"
+    "pg": "^8.11.0",
+    "stripe": "^14.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
+    "caxa": "^3.0.1"
   }
 }
