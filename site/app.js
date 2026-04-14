@@ -45,6 +45,7 @@ const S = {
   cacheSets: 0,
   setsView: false,
   saleView: false,
+  inventoryView: false,
   saleCards: [],
   setStats: new Map(),
   cardCache: new Map(),
@@ -54,6 +55,19 @@ const S = {
   cart: new Map(),
   storeInventory: new Map(), // `${game}|${slug}|${cardId}|${grading}` → {quantity_available, price_cents}
   adminInventory: [],
+  // Infinite scroll pagination
+  pagination: {
+    cards: { rendered: 0, total: 0, batchSize: 50, sentinel: null, loading: false },
+    sets: { rendered: 0, total: 0, batchSize: 50, sentinel: null, loading: false },
+    sale: { rendered: 0, total: 0, batchSize: 50, sentinel: null, loading: false },
+    inventory: { rendered: 0, total: 0, batchSize: 50, sentinel: null, loading: false },
+  },
+  renderQueue: {
+    cards: null,
+    sets: null,
+    sale: null,
+    inventory: null,
+  },
 };
 
 // ── DOM ───────────────────────────────────────────────────────────────────
@@ -105,7 +119,6 @@ const E = {
   setsOvTitle:   g('sets-ov-title'),
   btnLoadAllStats: g('btn-load-all-stats'),
   setsOvTbody:   g('sets-ov-tbody'),
-  saleTitle:     g('sale-title'),
   saleSearch:    g('sale-search'),
   saleTbody:     g('sale-tbody'),
   inventoryTitle: g('inventory-title'),
@@ -297,6 +310,11 @@ function switchGame(key) {
   E.setExtLink.style.display = 'none';
   E.statsBar.style.display = 'none';
   E.footerBar.style.display = 'none';
+
+  // Exit special views when switching games
+  if (S.saleView) { S.saleView = false; E.btnViewSale.classList.remove('active'); }
+  if (S.inventoryView) { S.inventoryView = false; E.btnInventory.classList.remove('active'); }
+
   if (S.setsView) {
     renderSetsOverview();
     showState('sets-view');
@@ -367,8 +385,10 @@ function renderSetList() {
 
 // ── Load set ───────────────────────────────────────────────────────────────
 async function loadSet(slug, name, btn) {
-  // Exit sets overview if active (loadSet will handle the state transition itself)
+  // Exit other views if active (loadSet will handle the state transition itself)
   if (S.setsView) exitSetsView(false);
+  if (S.saleView) exitSaleView(false);
+  if (S.inventoryView) exitInventoryView();
   // Close mobile sidebar when user selects a set
   if (isMobile()) closeSidebar();
   if (S.slug === slug && S.allCards.length > 0) {
@@ -467,12 +487,14 @@ function updateStats() {
 
 // ── URL Routing ────────────────────────────────────────────────────────────
 function buildPath() {
-  // Build path from current state: /{game}[/{slug}][/sets-overview][/on-sale]
+  // Build path from current state: /{game}[/{slug}][/sets-overview][/on-sale][/inventory]
   let path = `/${S.game}`;
   if (S.setsView) {
     path += '/sets-overview';
   } else if (S.saleView) {
     path += '/on-sale';
+  } else if (S.inventoryView) {
+    path += '/inventory';
   } else if (S.slug) {
     path += `/${encodeURIComponent(S.slug)}`;
   }
@@ -482,7 +504,7 @@ function buildPath() {
 function pushState() {
   const path = buildPath();
   window.history.pushState(
-    { game: S.game, slug: S.slug, setsView: S.setsView, saleView: S.saleView },
+    { game: S.game, slug: S.slug, setsView: S.setsView, saleView: S.saleView, inventoryView: S.inventoryView },
     '',
     path
   );
@@ -496,6 +518,7 @@ async function restoreFromUrl() {
   if (parts.length === 0) {
     S.setsView = false;
     S.saleView = false;
+    S.inventoryView = false;
     S.slug = null;
     return;
   }
@@ -522,6 +545,7 @@ async function restoreFromUrl() {
   if (parts[parts.length - 1] === 'sets-overview') {
     S.setsView = true;
     S.saleView = false;
+    S.inventoryView = false;
     E.btnViewSets.classList.add('active');
     E.btnViewSale.classList.remove('active');
     E.cardSearch.value = '';
@@ -536,6 +560,7 @@ async function restoreFromUrl() {
   if (parts[parts.length - 1] === 'on-sale') {
     S.saleView = true;
     S.setsView = false;
+    S.inventoryView = false;
     E.btnViewSale.classList.add('active');
     E.btnViewSets.classList.remove('active');
     E.cardSearch.value = '';
@@ -543,6 +568,20 @@ async function restoreFromUrl() {
     renderSetList();
     renderSaleView();
     showState('sale-view');
+    return;
+  }
+
+  // Check for /inventory flag
+  if (parts[parts.length - 1] === 'inventory') {
+    S.inventoryView = true;
+    S.setsView = false;
+    S.saleView = false;
+    E.btnInventory.classList.add('active');
+    E.btnViewSets.classList.remove('active');
+    E.btnViewSale.classList.remove('active');
+    renderSetList();
+    renderInventoryTable();
+    showState('inventory-view');
     return;
   }
 
@@ -554,8 +593,10 @@ async function restoreFromUrl() {
       S.slug = slug;
       S.setsView = false;
       S.saleView = false;
+      S.inventoryView = false;
       E.btnViewSets.classList.remove('active');
       E.btnViewSale.classList.remove('active');
+      E.btnInventory.classList.remove('active');
       await loadSet(slug, setInfo.name);
     }
   } else {
@@ -563,6 +604,7 @@ async function restoreFromUrl() {
     S.slug = null;
     S.setsView = false;
     S.saleView = false;
+    S.inventoryView = false;
     renderSetList();
     showState('welcome');
   }
@@ -637,100 +679,19 @@ function renderCards() {
 
   showState('table');
 
-  const sealedCards = cards.filter(c => c.sealed);
-  const regularCards = cards.filter(c => !c.sealed);
-  const hasSealedSection = sealedCards.length > 0;
-
-  const frag = document.createDocumentFragment();
-  let rowNum = 0;
-
-  // ── Sealed products section ──
-  if (hasSealedSection) {
-    const dividerRow = document.createElement('tr');
-    dividerRow.className = 'section-divider';
-    dividerRow.innerHTML = `<td colspan="7"><span class="section-label sealed-label">📦 Sealed Products <span class="section-count">${sealedCards.length}</span></span></td>`;
-    frag.appendChild(dividerRow);
-
-    sealedCards.forEach((card, idx) => {
-      const tr = document.createElement('tr');
-      tr.className = 'card-row sealed-row';
-      tr.style.animationDelay = `${Math.min(idx * 10, 250)}ms`;
-      const uv = parsePrice(card.ungraded);
-      const uClass = `price price-u${uv && uv >= HOT_U ? ' hot' : ''}`;
-      const u2Class = card.ungraded === '—' ? 'price price-nil' : uClass;
-      const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
-      const pv = parsePrice(card.psa10);
-      const pClass = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
-      const stockKey = storeKey(S.game, S.slug, card.id, 0);
-      const stockItem = S.storeInventory.get(stockKey);
-      const stockQty = stockItem ? stockItem.quantity_available : 0;
-      const stockLabel = stockQty === 0 ? 'Out of stock' : `${stockQty} in stock`;
-      const stockClass = stockQty === 0 ? 'stock-out' : 'stock-in';
-      tr.innerHTML = `
-        <td class="td-num">${++rowNum}</td>
-        <td class="td-img">
-          ${card.img
-            ? `<img class="card-thumb" src="${escA(card.img)}" alt="${escA(card.name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>📦</div>'">`
-            : `<div class="card-thumb-ph">📦</div>`}
-        </td>
-        <td><a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a></td>
-        <td class="td-stock"><span class="stock-badge ${stockClass}">${esc(stockLabel)}</span></td>
-        <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
-        <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
-        <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>
-        <td class="td-action"><button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Options">⋮</button></td>`;
-      frag.appendChild(tr);
-    });
-  }
-
-  // ── Individual cards section ──
-  if (hasSealedSection && regularCards.length > 0) {
-    const dividerRow2 = document.createElement('tr');
-    dividerRow2.className = 'section-divider';
-    dividerRow2.innerHTML = `<td colspan="7"><span class="section-label cards-label">🃏 Individual Cards <span class="section-count">${regularCards.length}</span></span></td>`;
-    frag.appendChild(dividerRow2);
-  }
-
-  regularCards.forEach((card, idx) => {
-    const tr = document.createElement('tr');
-    tr.className = 'card-row';
-    tr.style.animationDelay = `${Math.min((hasSealedSection ? sealedCards.length + idx : idx) * 10, 250)}ms`;
-
-    const uv = parsePrice(card.ungraded);
-    const pv = parsePrice(card.psa10);
-    const uClass = `price price-u${uv && uv >= HOT_U ? ' hot' : ''}`;
-    const pClass  = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
-    const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
-    const u2Class = card.ungraded === '—' ? 'price price-nil' : uClass;
-    const stockKey = storeKey(S.game, S.slug, card.id, 0);
-    const stockItem = S.storeInventory.get(stockKey);
-    const stockQty = stockItem ? stockItem.quantity_available : 0;
-    const stockLabel = stockQty === 0 ? 'Out of stock' : `${stockQty} in stock`;
-    const stockClass = stockQty === 0 ? 'stock-out' : 'stock-in';
-    tr.innerHTML = `
-      <td class="td-num">${++rowNum}</td>
-      <td class="td-img">
-        ${card.img
-          ? `<img class="card-thumb" src="${escA(card.img)}" alt="${escA(card.name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>🃏</div>'">`
-          : `<div class="card-thumb-ph">🃏</div>`}
-      </td>
-      <td><a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a></td>
-      <td class="td-stock"><span class="stock-badge ${stockClass}">${esc(stockLabel)}</span></td>
-      <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
-      <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
-      <td class="td-price td-psa10"><span class="${pCard(card.psa10, pClass)}">${esc(card.psa10)}</span></td>
-      <td class="td-action"><button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Options">⋮</button></td>`;
-    frag.appendChild(tr);
-  });
+  // Setup pagination
+  S.pagination.cards.total = cards.length;
+  S.pagination.cards.rendered = 0;
 
   E.tbody.innerHTML = '';
-  E.tbody.appendChild(frag);
-
   E.footerBar.style.display = 'flex';
-  const totalLabel = hasSealedSection
-    ? `${regularCards.length} cards · ${sealedCards.length} sealed · ${S.allCards.length} total`
-    : `${cards.length} of ${S.allCards.length} cards`;
+  const totalLabel = `${cards.length} cards`;
   E.footerCount.textContent = totalLabel;
+
+  // Setup infinite scroll first (creates sentinel) before loading items
+  setupInfiniteScroll('#price-tbody', 'cards');
+  // Load first batch
+  loadMoreItems('cards');
 }
 
 function renderGlobalSearchResults(query) {
@@ -1121,10 +1082,15 @@ function updateSovRow(row, stats) {
 
 function enterSetsView() {
   if (S.setsView) { exitSetsView(); return; }
-  // Exit sale view if active
+  // Exit other views if active
   if (S.saleView) exitSaleView(false);
+  if (S.inventoryView) exitInventoryView();
   S.setsView = true;
+  S.saleView = false;
+  S.inventoryView = false;
   E.btnViewSets.classList.add('active');
+  E.btnViewSale.classList.remove('active');
+  E.btnInventory.classList.remove('active');
   E.statsBar.style.display = 'none';
   E.footerBar.style.display = 'none';
   E.setExtLink.style.display = 'none';
@@ -1169,10 +1135,15 @@ function exitSetsView(restoreState = true) {
 // ── On Sale View ──────────────────────────────────────────────────────────
 async function enterSaleView() {
   if (S.saleView) { exitSaleView(); return; }
-  // Exit sets view if active
+  // Exit other views if active
   if (S.setsView) exitSetsView(false);
+  if (S.inventoryView) exitInventoryView();
   S.saleView = true;
+  S.setsView = false;
+  S.inventoryView = false;
   E.btnViewSale.classList.add('active');
+  E.btnViewSets.classList.remove('active');
+  E.btnInventory.classList.remove('active');
   E.statsBar.style.display = 'none';
   E.footerBar.style.display = 'none';
   E.setExtLink.style.display = 'none';
@@ -1249,82 +1220,17 @@ function renderSaleView() {
   // Start caching images in background
   cacheImagesToLocalStorage(allItems);
 
-  // Separate sealed from individual items
-  const sealed = allItems.filter(item => item.sealed);
-  const individual = allItems.filter(item => !item.sealed);
-
-  E.saleTitle.textContent = `On Sale — ${allItems.length} Items`;
+  E.setTitle.textContent = `On Sale — ${allItems.length} Items`;
   E.saleTbody.innerHTML = '';
 
-  const frag = document.createDocumentFragment();
+  // Setup pagination
+  S.pagination.sale.total = allItems.length;
+  S.pagination.sale.rendered = 0;
 
-  // Add sealed section if there are sealed products
-  if (sealed.length > 0) {
-    const dividerRow = document.createElement('tr');
-    dividerRow.className = 'section-divider';
-    dividerRow.innerHTML = `<td colspan="8"><span class="section-label sealed-label">📦 Sealed Products <span class="section-count">${sealed.length}</span></span></td>`;
-    frag.appendChild(dividerRow);
-
-    sealed.forEach(item => {
-      const gradingLabel = item.grading === 0 ? 'Ungraded' : item.grading === 9 ? 'Grade 9' : 'PSA 10';
-      const price = (item.price_cents / 100).toFixed(2);
-      const card = item.cardData || S.cardCache.get(`${item.game}|${item.set_slug}|${item.card_number}`);
-      const imgUrl = card?.img;
-      const imgHtml = imgUrl
-        ? `<img class="card-thumb" src="${escA(imgUrl)}" alt="${escA(item.card_name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>📦</div>'">`
-        : `<div class="card-thumb-ph">📦</div>`;
-
-      const tr = document.createElement('tr');
-      tr.className = 'sale-row sealed-row';
-      tr.dataset.cardId = `${item.game}-${item.set_slug}-${item.card_number}-${item.grading}`;
-      tr.innerHTML = `
-        <td class="td-img">${imgHtml}</td>
-        <td class="td-name">${esc(item.card_name || `Sealed #${item.card_number}`)}</td>
-        <td class="td-name">#${esc(item.card_number)}</td>
-        <td class="td-name">${esc(item.set_slug)}</td>
-        <td class="td-price">${esc(gradingLabel)}</td>
-        <td class="td-price"><span class="sov-price">$${price}</span></td>
-        <td class="td-price td-stock">${item.available_stock}</td>
-        <td class="td-action"><button class="btn-add-to-cart" data-game="${escA(item.game)}" data-set="${escA(item.set_slug)}" data-card="${escA(item.card_number)}" data-grading="${item.grading}">Add</button></td>`;
-      frag.appendChild(tr);
-    });
-  }
-
-  // Add individual cards section
-  if (individual.length > 0) {
-    if (sealed.length > 0) {
-      const dividerRow = document.createElement('tr');
-      dividerRow.className = 'section-divider';
-      dividerRow.innerHTML = `<td colspan="8"><span class="section-label">Individual Cards <span class="section-count">${individual.length}</span></span></td>`;
-      frag.appendChild(dividerRow);
-    }
-
-    individual.forEach(item => {
-      const gradingLabel = item.grading === 0 ? 'Ungraded' : item.grading === 9 ? 'Grade 9' : 'PSA 10';
-      const price = (item.price_cents / 100).toFixed(2);
-      const card = item.cardData || S.cardCache.get(`${item.game}|${item.set_slug}|${item.card_number}`);
-      const imgUrl = card?.img;
-      const imgHtml = imgUrl
-        ? `<img class="card-thumb" src="${escA(imgUrl)}" alt="${escA(item.card_name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>🃏</div>'">`
-        : `<div class="card-thumb-ph">🃏</div>`;
-
-      const tr = document.createElement('tr');
-      tr.className = 'sale-row';
-      tr.dataset.cardId = `${item.game}-${item.set_slug}-${item.card_number}-${item.grading}`;
-      tr.innerHTML = `
-        <td class="td-img">${imgHtml}</td>
-        <td class="td-name">${esc(item.card_name || `Card #${item.card_number}`)}</td>
-        <td class="td-name">#${esc(item.card_number)}</td>
-        <td class="td-name">${esc(item.set_slug)}</td>
-        <td class="td-price">${esc(gradingLabel)}</td>
-        <td class="td-price"><span class="sov-price">$${price}</span></td>
-        <td class="td-price td-stock">${item.available_stock}</td>
-        <td class="td-action"><button class="btn-add-to-cart" data-game="${escA(item.game)}" data-set="${escA(item.set_slug)}" data-card="${escA(item.card_number)}" data-grading="${item.grading}">Add</button></td>`;
-      frag.appendChild(tr);
-    });
-  }
-
-  E.saleTbody.appendChild(frag);
+  // Setup infinite scroll first (creates sentinel) before loading items
+  setupInfiniteScroll('#sale-tbody', 'sale');
+  // Load first batch
+  loadMoreItems('sale');
 }
 
 function filterSaleView(query) {
@@ -1373,41 +1279,17 @@ function renderSetsOverview() {
   E.setsOvTitle.textContent = `${label} — ${sets.length} Sets`;
   E.setsOvTbody.innerHTML = '';
 
-  const CHUNK = 60;
-  let i = 0;
-  function renderChunk() {
-    const frag = document.createDocumentFragment();
-    const end = Math.min(i + CHUNK, sets.length);
-    for (; i < end; i++) {
-      const s = sets[i];
-      const stats = S.setStats.get(s.slug);
-      const tr = document.createElement('tr');
-      tr.className = 'sov-row';
-      tr.dataset.slug = s.slug;
-      tr.innerHTML = `
-        <td class="td-num">${i + 1}</td>
-        <td class="sov-set-name">${esc(s.name)}</td>
-        <td class="td-price">${stats ? stats.count : '<span class="sov-price-empty">—</span>'}</td>
-        <td class="td-price">${stats ? `<span class="sov-price">${fmt(stats.avgUngraded)}</span>` : '<span class="sov-price-empty">—</span>'}</td>
-        <td class="td-price">${stats ? `<span class="sov-price">${fmt(stats.topUngraded)}</span>` : '<span class="sov-price-empty">—</span>'}</td>
-        <td class="td-price">${stats ? `<span class="sov-price-psa">${fmt(stats.topPsa10)}</span>` : '<span class="sov-price-empty">—</span>'}</td>
-        <td class="td-action">${stats ? '' : `<button class="btn-load-row" data-slug="${escA(s.slug)}" data-name="${escA(s.name)}">Load</button>`}</td>`;
-      // Click row to navigate to set
-      tr.addEventListener('click', (e) => {
-        if (e.target.closest('.btn-load-row')) return;
-        const btn = document.querySelector(`.set-item[data-slug="${CSS.escape(s.slug)}"]`);
-        loadSet(s.slug, s.name, btn);
-      });
-      frag.appendChild(tr);
-    }
-    E.setsOvTbody.appendChild(frag);
-    if (i < sets.length) requestAnimationFrame(renderChunk);
-    else {
-      // After all chunks are rendered, mark queued rows
-      markQueuedRows(S.game);
-    }
-  }
-  renderChunk();
+  // Setup pagination
+  S.pagination.sets.total = sets.length;
+  S.pagination.sets.rendered = 0;
+
+  // Setup infinite scroll first (creates sentinel) before loading items
+  setupInfiniteScroll('#sets-ov-tbody', 'sets');
+  // Load first batch
+  loadMoreItems('sets');
+
+  // Mark queued rows after initial render
+  setTimeout(() => markQueuedRows(S.game), 0);
 }
 
 async function loadSetStatsRow(slug, name, row, force = false) {
@@ -1636,13 +1518,37 @@ E.saleSearch.addEventListener('input', (e) => filterSaleView(e.target.value));
 E.saleTbody.addEventListener('click', (e) => {
   const btn = e.target.closest('.btn-add-to-cart');
   if (!btn) return;
+  if (btn.disabled) return; // Prevent adding if out of stock
+
   const game = btn.dataset.game;
   const setSlug = btn.dataset.set;
   const cardNumber = btn.dataset.card;
   const grading = parseInt(btn.dataset.grading, 10);
+
+  // Find and update the stock cell in real-time
+  const row = btn.closest('tr');
+  const stockCell = row.querySelector('.td-stock');
+  if (stockCell) {
+    const currentStock = parseInt(stockCell.textContent, 10);
+    if (currentStock > 0) {
+      const newStock = currentStock - 1;
+      stockCell.textContent = newStock;
+      // Update button state if stock hits 0
+      if (newStock === 0) {
+        btn.disabled = true;
+        btn.textContent = 'Out of Stock';
+      }
+      // Also update the sale cards data
+      const item = S.saleCards.find(i => i.game === game && i.set_slug === setSlug && i.card_number === cardNumber && i.grading === grading);
+      if (item) item.available_stock = newStock;
+    }
+  }
+
   addToCart(game, setSlug, cardNumber, grading);
-  btn.textContent = '✓ Added';
-  setTimeout(() => { btn.textContent = 'Add'; }, 1500);
+  if (!btn.disabled) {
+    btn.textContent = '✓ Added';
+    setTimeout(() => { btn.textContent = 'Add'; }, 1500);
+  }
 });
 
 // ── Cache click handlers ──────────────────────────────────────────────────
@@ -2006,6 +1912,17 @@ async function enterInventoryView() {
     return;
   }
 
+  // Exit other views
+  if (S.setsView) exitSetsView(false);
+  if (S.saleView) exitSaleView(false);
+
+  S.inventoryView = true;
+  S.setsView = false;
+  S.saleView = false;
+  E.btnInventory.classList.add('active');
+  E.btnViewSets.classList.remove('active');
+  E.btnViewSale.classList.remove('active');
+
   E.stateInventoryView.style.display = 'flex';
 
   // Show inventory indicator in sidebar
@@ -2019,6 +1936,9 @@ async function enterInventoryView() {
 }
 
 function exitInventoryView() {
+  S.inventoryView = false;
+  E.btnInventory.classList.remove('active');
+
   E.stateInventoryView.style.display = 'none';
 
   // Restore sidebar title
@@ -2040,11 +1960,210 @@ function renderInventoryTable() {
     return;
   }
 
+  // Setup pagination
+  S.pagination.inventory.total = items.length;
+  S.pagination.inventory.rendered = 0;
+
+  // Setup infinite scroll first (creates sentinel) before loading items
+  setupInfiniteScroll('#inventory-tbody', 'inventory');
+  // Load first batch
+  loadMoreItems('inventory');
+}
+
+// ── Infinite Scroll System ──────────────────────────────────────────────────
+function setupInfiniteScroll(tableSelector, paginationKey) {
+  const tbody = document.querySelector(tableSelector);
+  if (!tbody) return;
+
+  // Remove existing sentinel if present
+  const existingSentinel = tbody.querySelector('.scroll-sentinel');
+  if (existingSentinel) existingSentinel.remove();
+
+  // Create sentinel element
+  const sentinel = document.createElement('tr');
+  sentinel.className = 'scroll-sentinel';
+  sentinel.style.height = '1px';
+  tbody.appendChild(sentinel);
+
+  S.pagination[paginationKey].sentinel = sentinel;
+  S.pagination[paginationKey].loading = false;
+
+  // Setup Intersection Observer
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting &&
+            !S.pagination[paginationKey].loading &&
+            S.pagination[paginationKey].rendered < S.pagination[paginationKey].total) {
+          S.pagination[paginationKey].loading = true;
+          loadMoreItems(paginationKey);
+        }
+      });
+    },
+    { rootMargin: '200px' }
+  );
+
+  observer.observe(sentinel);
+}
+
+function loadMoreItems(paginationKey) {
+  const paging = S.pagination[paginationKey];
+  if (paging.rendered >= paging.total) {
+    paging.loading = false;
+    return;
+  }
+
+  const startIdx = paging.rendered;
+  const endIdx = Math.min(startIdx + paging.batchSize, paging.total);
+
+  switch (paginationKey) {
+    case 'cards':
+      renderCardsBatch(startIdx, endIdx);
+      break;
+    case 'sets':
+      renderSetsBatch(startIdx, endIdx);
+      break;
+    case 'sale':
+      renderSaleBatch(startIdx, endIdx);
+      break;
+    case 'inventory':
+      renderInventoryBatch(startIdx, endIdx);
+      break;
+  }
+
+  paging.rendered = endIdx;
+  paging.loading = false;
+}
+
+function renderCardsBatch(startIdx, endIdx) {
+  const cards = S.visibleCards;
+  if (!cards.length) return;
+
+  const tbody = E.tbody;
+  const sentinel = S.pagination.cards.sentinel;
+  const batchCards = cards.slice(startIdx, endIdx);
   const frag = document.createDocumentFragment();
-  items.forEach(item => {
+
+  let rowNum = startIdx + 1;
+  batchCards.forEach((card) => {
+    const tr = document.createElement('tr');
+    tr.className = 'card-row' + (card.sealed ? ' sealed-row' : '');
+
+    const uv = parsePrice(card.ungraded);
+    const pv = parsePrice(card.psa10);
+    const uClass = `price price-u${uv && uv >= HOT_U ? ' hot' : ''}`;
+    const pClass = `price price-p10${pv && pv >= GEM_P10 ? ' gem' : ''}`;
+    const g9Class = card.grade9 === '—' ? 'price price-nil' : 'price price-g9';
+    const u2Class = card.ungraded === '—' ? 'price price-nil' : uClass;
+    const icon = card.sealed ? '📦' : '🃏';
+
+    const stockKey = storeKey(S.game, S.slug, card.id, 0);
+    const stockItem = S.storeInventory.get(stockKey);
+    const stockQty = stockItem ? stockItem.quantity_available : 0;
+    const stockLabel = stockQty === 0 ? 'Out of stock' : `${stockQty} in stock`;
+    const stockClass = stockQty === 0 ? 'stock-out' : 'stock-in';
+
+    tr.innerHTML = `
+      <td class="td-num">${rowNum++}</td>
+      <td class="td-img">
+        ${card.img
+          ? `<img class="card-thumb" src="${escA(card.img)}" alt="${escA(card.name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>${icon}</div>'">`
+          : `<div class="card-thumb-ph">${icon}</div>`}
+      </td>
+      <td><a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a></td>
+      <td class="td-stock"><span class="stock-badge ${stockClass}">${esc(stockLabel)}</span></td>
+      <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
+      <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
+      <td class="td-price td-psa10"><span class="${pClass}">${esc(card.psa10)}</span></td>
+      <td class="td-action"><button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Options">⋮</button></td>`;
+    frag.appendChild(tr);
+  });
+
+  tbody.insertBefore(frag, sentinel);
+}
+
+function renderSetsBatch(startIdx, endIdx) {
+  const game = S.games[S.game];
+  const sets = game?.sets || [];
+  const tbody = E.setsOvTbody;
+  const sentinel = S.pagination.sets.sentinel;
+  const batchSets = sets.slice(startIdx, endIdx);
+  const frag = document.createDocumentFragment();
+
+  batchSets.forEach((s, idx) => {
+    const i = startIdx + idx;
+    const stats = S.setStats.get(s.slug);
+    const tr = document.createElement('tr');
+    tr.className = 'sov-row';
+    tr.dataset.slug = s.slug;
+    tr.innerHTML = `
+      <td class="td-num">${i + 1}</td>
+      <td class="sov-set-name">${esc(s.name)}</td>
+      <td class="td-price">${stats ? stats.count : '<span class="sov-price-empty">—</span>'}</td>
+      <td class="td-price">${stats ? `<span class="sov-price">${fmt(stats.avgUngraded)}</span>` : '<span class="sov-price-empty">—</span>'}</td>
+      <td class="td-price">${stats ? `<span class="sov-price">${fmt(stats.topUngraded)}</span>` : '<span class="sov-price-empty">—</span>'}</td>
+      <td class="td-price">${stats ? `<span class="sov-price-psa">${fmt(stats.topPsa10)}</span>` : '<span class="sov-price-empty">—</span>'}</td>
+      <td class="td-action">${stats ? '' : `<button class="btn-load-row" data-slug="${escA(s.slug)}" data-name="${escA(s.name)}">Load</button>`}</td>`;
+
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('.btn-load-row')) return;
+      const btn = document.querySelector(`.set-item[data-slug="${CSS.escape(s.slug)}"]`);
+      loadSet(s.slug, s.name, btn);
+    });
+    frag.appendChild(tr);
+  });
+
+  tbody.insertBefore(frag, sentinel);
+}
+
+function renderSaleBatch(startIdx, endIdx) {
+  const items = S.saleCards;
+  const tbody = E.saleTbody;
+  const sentinel = S.pagination.sale.sentinel;
+  const batchItems = items.slice(startIdx, endIdx);
+  const frag = document.createDocumentFragment();
+
+  batchItems.forEach(item => {
     const gradingLabel = item.grading === 0 ? 'Ungraded' : item.grading === 9 ? 'Grade 9' : 'PSA 10';
     const price = (item.price_cents / 100).toFixed(2);
-    // Use attached cardData or fall back to cache lookup
+    const card = item.cardData || S.cardCache.get(`${item.game}|${item.set_slug}|${item.card_number}`);
+    const imgUrl = card?.img;
+    const icon = item.sealed ? '📦' : '🃏';
+    const imgHtml = imgUrl
+      ? `<img class="card-thumb" src="${escA(imgUrl)}" alt="${escA(item.card_name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>${icon}</div>'">`
+      : `<div class="card-thumb-ph">${icon}</div>`;
+
+    const tr = document.createElement('tr');
+    tr.className = 'sale-row' + (item.sealed ? ' sealed-row' : '');
+    tr.dataset.cardId = `${item.game}-${item.set_slug}-${item.card_number}-${item.grading}`;
+    const isOutOfStock = item.available_stock === 0;
+    const btnDisabled = isOutOfStock ? 'disabled' : '';
+    const btnText = isOutOfStock ? 'Out of Stock' : 'Add';
+    tr.innerHTML = `
+      <td class="td-img">${imgHtml}</td>
+      <td class="td-name">${esc(item.card_name || `Card #${item.card_number}`)}</td>
+      <td class="td-name">#${esc(item.card_number)}</td>
+      <td class="td-name">${esc(item.set_slug)}</td>
+      <td class="td-price">${esc(gradingLabel)}</td>
+      <td class="td-price"><span class="sov-price">$${price}</span></td>
+      <td class="td-price td-stock">${item.available_stock}</td>
+      <td class="td-action"><button class="btn-add-to-cart" ${btnDisabled} data-game="${escA(item.game)}" data-set="${escA(item.set_slug)}" data-card="${escA(item.card_number)}" data-grading="${item.grading}">${btnText}</button></td>`;
+    frag.appendChild(tr);
+  });
+
+  tbody.insertBefore(frag, sentinel);
+}
+
+function renderInventoryBatch(startIdx, endIdx) {
+  const items = S.adminInventory;
+  const tbody = E.inventoryTbody;
+  const sentinel = S.pagination.inventory.sentinel;
+  const batchItems = items.slice(startIdx, endIdx);
+  const frag = document.createDocumentFragment();
+
+  batchItems.forEach(item => {
+    const gradingLabel = item.grading === 0 ? 'Ungraded' : item.grading === 9 ? 'Grade 9' : 'PSA 10';
+    const price = (item.price_cents / 100).toFixed(2);
     const card = item.cardData || S.cardCache.get(`${item.game}|${item.set_slug}|${item.card_number}`);
     const imgHtml = card?.img
       ? `<img class="card-thumb" src="${escA(card.img)}" alt="${escA(item.card_name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>📦</div>'">`
@@ -2067,7 +2186,8 @@ function renderInventoryTable() {
       <td class="td-action"><button class="btn-inv-edit" data-game="${escA(item.game)}" data-slug="${escA(item.set_slug)}" data-card="${escA(item.card_number)}" data-grading="${item.grading}">✎</button></td>`;
     frag.appendChild(tr);
   });
-  E.inventoryTbody.appendChild(frag);
+
+  tbody.insertBefore(frag, sentinel);
 }
 
 init();
@@ -2266,11 +2386,13 @@ document.addEventListener('keydown', e => {
 let invCurrentCard = null;
 let invCurrentGame = null;
 let invCurrentSlug = null;
+let invCurrentRow = null;
 
 function openInvPopover(card, triggerBtn, game, slug) {
   invCurrentCard = card;
   invCurrentGame = game || S.game;
   invCurrentSlug = slug || S.slug;
+  invCurrentRow = triggerBtn.closest('tr');
   E.invCardName.textContent = card.name;
   E.invStatus.textContent = '';
   updateInvPopoverStock();
@@ -2294,6 +2416,7 @@ function closeInvPopover() {
   invCurrentCard = null;
   invCurrentGame = null;
   invCurrentSlug = null;
+  invCurrentRow = null;
 }
 
 function updateInvPopoverStock() {
@@ -2339,6 +2462,22 @@ E.invGrading.addEventListener('change', () => {
 E.btnInvCart.addEventListener('click', () => {
   if (!invCurrentCard) return;
   const grading = parseInt(E.invGrading.value, 10);
+
+  // Update stock in real-time if we have a row reference
+  if (invCurrentRow) {
+    const stockCell = invCurrentRow.querySelector('.td-stock');
+    if (stockCell) {
+      const currentStock = parseInt(stockCell.textContent, 10);
+      if (currentStock > 0) {
+        const newStock = currentStock - 1;
+        stockCell.textContent = newStock;
+        // Also update the inventory data
+        const item = S.adminInventory.find(i => i.game === invCurrentGame && i.set_slug === invCurrentSlug && i.card_number === invCurrentCard.id && i.grading === grading);
+        if (item) item.quantity_available = newStock;
+      }
+    }
+  }
+
   addToCart(invCurrentGame, invCurrentSlug, invCurrentCard.id, grading, 1);
   closeInvPopover();
 });

@@ -690,8 +690,11 @@ appkit-button::part(button) {
   border-radius: var(--r-full);
   transition: background var(--ease), color var(--ease), border-color var(--ease);
   white-space: nowrap;
+  height: 100%;
+  width: 100%;
 }
-.btn-add-to-cart:hover { color: var(--text); border-color: var(--game-accent); background: var(--game-accent-dim); }
+.btn-add-to-cart:hover:not(:disabled) { color: var(--text); border-color: var(--game-accent); background: var(--game-accent-dim); }
+.btn-add-to-cart:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── Inventory View ──────────────────────────────────── */
 .inventory-view-wrap {
@@ -711,7 +714,7 @@ appkit-button::part(button) {
 .inventory-table .th-action { width: 60px; }
 .inventory-table .td-action { text-align: center; padding: var(--sp1) var(--sp2); }
 .btn-inv-edit {
-  width: 32px; height: 32px;
+  width: 100%; height: 100%;
   display: flex; align-items: center; justify-content: center;
   background: none; border: none; color: var(--muted);
   cursor: pointer; font-size: 1rem; line-height: 1;
@@ -888,10 +891,6 @@ appkit-button::part(button) {
   white-space: nowrap;
 }
 .td-action {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp2);
   min-height: 50px;
 }
 
