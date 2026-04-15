@@ -1,6 +1,29 @@
+# Dependencies
 node_modules/
+
+# Environment variables (contains secrets: DATABASE_URL, JWT_SECRET, STRIPE_SECRET_KEY, etc.)
 .env
+.env.local
+.env.*.local
 
 # Tauri build artifacts
 src-tauri/target/
 src-tauri/binaries/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Build output
+dist/
+build/
