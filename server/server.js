@@ -7,6 +7,7 @@ const nodePath = require('path');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const puppeteer = require('puppeteer');
 if (!process.env.DATABASE_URL) {
   require('dotenv').config({ path: nodePath.join(__dirname, '..', '.env') });
 }
@@ -6809,6 +6810,244 @@ async function fetchSetPagesFresh(slug) {
   return result;
 }
 
+// ── TCGPlayer Data ────────────────────────────────────────────────────────
+
+const TCG_PRODUCT_LINES = {
+  pokemon:    'pokemon',
+  mtg:        'magic',
+  yugioh:     'yugioh',
+  onepiece:   'one-piece',
+  lorcana:    'disney-lorcana',
+  digimon:    'digimon',
+  dragonball: 'dragon-ball-super',
+  gundam:     null,
+  swu:        'star-wars-unlimited',
+  riftbound:  null,
+};
+
+function slugToGame(slug) {
+  for (const [gameKey, prefix] of Object.entries(SLUG_PREFIXES)) {
+    if (slug.startsWith(prefix + '-') || slug === prefix) return gameKey;
+  }
+  return null;
+}
+
+function toTCGSetSlug(pcSlug, gameKey) {
+  const prefix = SLUG_PREFIXES[gameKey];
+  if (prefix && pcSlug.startsWith(prefix + '-')) return pcSlug.slice(prefix.length + 1);
+  return pcSlug;
+}
+
+function httpGetTCG(urlStr) {
+  return new Promise((resolve, reject) => {
+    const delay = 500 + Math.random() * 1000;
+    setTimeout(() => {
+      const opts = {
+        timeout: 30000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Accept-Encoding': 'identity',
+        },
+      };
+      const req = https.get(urlStr, opts, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          resolve(httpGetTCG(res.headers.location));
+          return;
+        }
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => resolve(data));
+      });
+      req.on('error', reject);
+    }, delay);
+  });
+}
+
+function parseTCGNextData(html) {
+  const cards = [];
+  try {
+    // Save sample HTML for debugging
+    if (!fs.existsSync('/tmp/tcgplayer-sample.html')) {
+      fs.writeFileSync('/tmp/tcgplayer-sample.html', html.slice(0, 10000));
+      console.log('Saved TCGPlayer HTML sample');
+    }
+
+    const m = /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/.exec(html);
+    if (!m) {
+      console.log('TCGPlayer: __NEXT_DATA__ not found in HTML (length:', html.length, ')');
+      // Check what scripts are in the page
+      const scripts = html.match(/<script[^>]*>([\s\S]*?)<\/script>/g) || [];
+      console.log('Found', scripts.length, 'script tags');
+      return cards;
+    }
+    const json = JSON.parse(m[1]);
+    console.log('TCGPlayer: JSON keys:', Object.keys(json));
+    console.log('TCGPlayer: pageProps keys:', Object.keys(json?.props?.pageProps || {}));
+    const results =
+      json?.props?.pageProps?.searchResults?.results ||
+      json?.props?.pageProps?.results ||
+      json?.props?.pageProps?.initialSearchState?.results ||
+      [];
+    console.log('TCGPlayer: Found', results.length, 'results');
+    for (const item of results) {
+      const name = item.productName || item.name || '';
+      if (!name) continue;
+      const productId = String(item.productId || item.id || '');
+      const productUrl = item.productUrl
+        ? (item.productUrl.startsWith('http') ? item.productUrl : `https://www.tcgplayer.com/${item.productUrl}`)
+        : `https://www.tcgplayer.com/product/${productId}`;
+      const img = item.imageUrl || item.image || '';
+      const market   = item.marketPrice   ?? item?.prices?.nearMintNormal?.marketPrice  ?? null;
+      const low      = item.lowestPrice   ?? item?.prices?.nearMintNormal?.lowPrice     ?? null;
+      const high     = item?.prices?.nearMintNormal?.highPrice ?? null;
+      const fmtP = v => (v != null ? `$${Number(v).toFixed(2)}` : '—');
+      cards.push({
+        id: productId,
+        name: htmlDecode(name.trim()),
+        url: productUrl,
+        img,
+        sealed: isSealed(name),
+        ungraded: fmtP(market),
+        grade9:   fmtP(low),
+        psa10:    fmtP(high),
+      });
+    }
+  } catch (_) {}
+  return cards;
+}
+
+const tcgCardCache = new Map(); // slug → { data, fetchedAt }
+let puppeteerBrowser = null;
+
+async function getPuppeteerBrowser() {
+  if (!puppeteerBrowser) {
+    puppeteerBrowser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+  }
+  return puppeteerBrowser;
+}
+
+async function fetchTCGPlayerCardsWithPuppeteer(urlStr) {
+  const cards = [];
+  try {
+    const browser = await getPuppeteerBrowser();
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    await page.goto(urlStr, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Wait for product cards to appear
+    try {
+      await page.waitForFunction(
+        () => document.querySelectorAll('[class*="product-card"]').length > 0,
+        { timeout: 15000 }
+      );
+    } catch (e) {
+      console.log('No product cards found');
+    }
+
+    // Extract all products
+    const pageCards = await page.evaluate(() => {
+      const cards = [];
+      const seen = new Set();
+
+      document.querySelectorAll('[class*="product-card"]').forEach(card => {
+        const link = card.querySelector('a[href*="/product/"]');
+        if (!link) return;
+
+        const url = link.href;
+        const id = url.match(/\/product\/(\d+)/)?.[1];
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+
+        const fullText = card.textContent;
+        const name = fullText.split('\n')[0].trim();
+        const priceMatch = fullText.match(/Market Price:\$([0-9.]+)/);
+        const price = priceMatch ? `$${priceMatch[1]}` : '—';
+
+        if (name && name.length > 2) {
+          cards.push({ id, name, url, price });
+          if (cards.length >= 100) return; // Stop at 100 per page
+        }
+      });
+
+      return cards;
+    });
+
+    await page.close();
+
+    // Format cards
+    return pageCards.map(c => ({
+      id: c.id,
+      name: htmlDecode(c.name.split(/Common,|Rare,|Holo/)[0].trim()),
+      url: c.url,
+      img: '',
+      sealed: isSealed(c.name),
+      ungraded: c.price,
+      grade9: '—',
+      psa10: '—',
+    }));
+  } catch (err) {
+    console.error('TCGPlayer fetch failed:', err.message);
+    return cards;
+  }
+}
+
+async function fetchTCGPlayerSet(slug, gameKey) {
+  console.log('fetchTCGPlayerSet called for slug=', slug, 'gameKey=', gameKey);
+
+  const productLine = TCG_PRODUCT_LINES[gameKey];
+  if (!productLine) {
+    console.log('No productLine for gameKey:', gameKey);
+    return { slug, cards: [], count: 0, source: 'ERROR_NO_PRODUCTLINE', gameKey };
+  }
+
+  const setSlug = toTCGSetSlug(slug, gameKey);
+  console.log('TCGSetSlug:', setSlug);
+  const allCards = [];
+
+  // Fetch ALL pages using Puppeteer
+  for (let page = 1; page <= 100; page++) {
+    const pageUrl =
+      `https://www.tcgplayer.com/search/${encodeURIComponent(productLine)}/${encodeURIComponent(setSlug)}` +
+      `?productLineName=${encodeURIComponent(productLine)}` +
+      `&setName=${encodeURIComponent(setSlug)}` +
+      `&productTypeName=Cards` +
+      `&page=${page}&view=grid`;
+    try {
+      console.log(`Fetching page ${page}...`);
+      const batch = await fetchTCGPlayerCardsWithPuppeteer(pageUrl);
+      console.log(`  Page ${page}: ${batch.length} cards`);
+      if (batch.length === 0) {
+        console.log(`  No more products on page ${page}, stopping.`);
+        break;
+      }
+      allCards.push(...batch);
+      await new Promise(r => setTimeout(r, 1500));
+    } catch (err) {
+      console.error(`TCGPlayer fetch error (page ${page}):`, err.message);
+      break;
+    }
+  }
+  console.log(`Fetched total ${allCards.length} cards from ${allCards.length > 0 ? Math.ceil(allCards.length / 100) : 0} pages`);
+
+  const now = new Date().toISOString();
+  const result = {
+    slug,
+    cards: allCards,
+    count: allCards.length,
+    source: `https://www.tcgplayer.com/search/${productLine}/${setSlug}?productLineName=${productLine}&setName=${setSlug}&productTypeName=Cards&_t=${now}`,
+    _timestamp: now,
+  };
+  console.log('TCGPlayer result:', { slug, cardCount: allCards.length, sourceUrl: result.source });
+  if (allCards.length > 0) tcgCardCache.set(slug, { data: result, fetchedAt: Date.now() });
+  return result;
+}
+
 // ── HTTP Server ────────────────────────────────────────────────────────────
 // Helper to read POST body
 async function readBody(req) {
@@ -6965,6 +7204,24 @@ const server = http.createServer(async (req, res) => {
     };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(status, null, 2));
+    return;
+  }
+
+  // ── /api/tcgset?slug=...&game=... ─────────────────────────────────────
+  if (reqPath === '/api/tcgset') {
+    const slug = query.slug;
+    if (!slug) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'slug required' })); return; }
+    const gameKey = query.game || slugToGame(slug);
+    if (!gameKey) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'game required' })); return; }
+    try {
+      const data = await fetchTCGPlayerSet(slug, gameKey);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    } catch (err) {
+      console.error('TCGPlayer API error:', err);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message, stack: err.stack, cards: [], count: 0 }));
+    }
     return;
   }
 
@@ -7440,5 +7697,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, async () => {
+  console.log('🚀 SERVER STARTED - TCGPlayer Puppeteer v2');
   initSetsCache().catch(() => {});
 });

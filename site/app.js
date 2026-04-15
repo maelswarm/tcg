@@ -49,6 +49,7 @@ const S = {
   saleCards: [],
   setStats: new Map(),
   cardCache: new Map(),
+  tcgCards: new Map(), // normName → tcg card data
   userId: null,
   authToken: null,
   isAdmin: false,
@@ -250,6 +251,16 @@ async function fetchGames() {
   const r = await fetch(`${API}/api/games`);
   return r.json();
 }
+function normName(s) { return s.toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+async function fetchTCGSet(slug, game) {
+  if (!API) return { cards: [] };
+  try {
+    const r = await fetch(`${API}/api/tcgset?slug=${encodeURIComponent(slug)}&game=${encodeURIComponent(game)}`);
+    return r.ok ? r.json() : { cards: [] };
+  } catch (_) { return { cards: [] }; }
+}
+
 async function fetchSet(slug, force = false) {
   if (!API) throw new Error('No API proxy — run: node server/server.js');
   const url = `${API}/api/set?slug=${encodeURIComponent(slug)}&pages=5${force ? '&force=true' : ''}`;
@@ -463,9 +474,21 @@ async function loadSet(slug, name, btn) {
 
     cacheSetStats(slug, S.allCards);
     await loadStoreInventory(S.game, slug);
+
+    // Clear stale TCG data before rendering, then fetch in background
+    S.tcgCards.clear();
     renderCards();
     updateStats();
     pushState();
+
+    // Kick off TCGPlayer fetch in background — re-renders when it arrives
+    const tcgLid = S.loadId;
+    fetchTCGSet(slug, S.game).then(tcgData => {
+      if (S.loadId !== tcgLid) return; // stale — user switched set
+      S.tcgCards.clear();
+      for (const c of (tcgData.cards || [])) S.tcgCards.set(normName(c.name), c);
+      renderCards();
+    });
   } catch (err) {
     if (lid !== S.loadId) return;
     if (btn) btn.classList.remove('loading', 'active');
@@ -2070,6 +2093,34 @@ function renderCardsBatch(startIdx, endIdx) {
     const stockLabel = stockQty === 0 ? 'Out of stock' : `${stockQty} in stock`;
     const stockClass = stockQty === 0 ? 'stock-out' : 'stock-in';
 
+    // Get TCGPlayer data if available
+    const tcg = S.tcgCards.get(normName(card.name));
+    const tuClass = tcg?.ungraded === '—' || !tcg ? 'price price-nil' : 'price price-u';
+    const tg9Class = tcg?.grade9 === '—' || !tcg ? 'price price-nil' : 'price price-g9';
+    const tp10Class = tcg?.psa10 === '—' || !tcg ? 'price price-nil' : 'price price-p10';
+
+    // Build combined price cells with both PC and TCG
+    const ungradedHtml = `
+      <div class="price-source">
+        <span class="source-label source-pc">PC</span>
+        <span class="${u2Class}">${esc(card.ungraded)}</span>
+      </div>
+      ${tcg ? `<div class="price-source"><span class="source-label source-tcg">TCG</span><span class="${tuClass}">${esc(tcg.ungraded)}</span></div>` : ''}`;
+
+    const grade9Html = `
+      <div class="price-source">
+        <span class="source-label source-pc">PC</span>
+        <span class="${g9Class}">${esc(card.grade9)}</span>
+      </div>
+      ${tcg ? `<div class="price-source"><span class="source-label source-tcg">TCG</span><span class="${tg9Class}">${esc(tcg.grade9)}</span></div>` : ''}`;
+
+    const psa10Html = `
+      <div class="price-source">
+        <span class="source-label source-pc">PC</span>
+        <span class="${pClass}">${esc(card.psa10)}</span>
+      </div>
+      ${tcg ? `<div class="price-source"><span class="source-label source-tcg">TCG</span><span class="${tp10Class}">${esc(tcg.psa10)}</span></div>` : ''}`;
+
     tr.innerHTML = `
       <td class="td-num">${rowNum++}</td>
       <td class="td-img">
@@ -2077,11 +2128,14 @@ function renderCardsBatch(startIdx, endIdx) {
           ? `<img class="card-thumb" src="${escA(card.img)}" alt="${escA(card.name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'card-thumb-ph\\'>${icon}</div>'">`
           : `<div class="card-thumb-ph">${icon}</div>`}
       </td>
-      <td><a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a></td>
+      <td>
+        <a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a>
+        ${tcg ? `<br><a class="source-link source-tcg" href="${escA(tcg.url)}" target="_blank" rel="noopener" style="font-size:0.7rem">TCGPlayer ↗</a>` : ''}
+      </td>
       <td class="td-stock"><span class="stock-badge ${stockClass}">${esc(stockLabel)}</span></td>
-      <td class="td-price"><span class="${u2Class}">${esc(card.ungraded)}</span></td>
-      <td class="td-price td-grade9"><span class="${g9Class}">${esc(card.grade9)}</span></td>
-      <td class="td-price td-psa10"><span class="${pClass}">${esc(card.psa10)}</span></td>
+      <td class="td-price">${ungradedHtml}</td>
+      <td class="td-price td-grade9">${grade9Html}</td>
+      <td class="td-price td-psa10">${psa10Html}</td>
       <td class="td-action"><button class="btn-dots" data-card-id="${escA(card.id)}" aria-label="Options">⋮</button></td>`;
     frag.appendChild(tr);
   });

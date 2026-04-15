@@ -552,6 +552,32 @@ appkit-button::part(button) {
 .price-u.hot   { color: var(--warn); }
 .price-p10.gem { color: #ff8c42; }
 
+/* ── Dual-source pricing (merged rows) ────────────────────────────── */
+.price-source { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+.price-source:last-child { margin-bottom: 0; }
+
+.source-label {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--r-sm);
+  flex-shrink: 0;
+}
+.source-label.source-pc {
+  background: var(--game-accent-dim);
+  color: var(--game-accent);
+}
+.source-label.source-tcg {
+  background: rgba(144, 144, 160, 0.15);
+  color: var(--muted);
+}
+
+.source-link { text-decoration: none; font-size: 0.72rem; }
+.source-link.source-tcg { color: var(--muted); }
+.source-link.source-tcg:hover { color: var(--accent); text-decoration: underline; }
+
 /* ── Section dividers (Sealed / Individual Cards) ──────────────────── */
 .section-divider td {
   padding: var(--sp2) var(--sp4);
