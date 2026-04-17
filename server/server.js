@@ -6698,8 +6698,25 @@ function parseNextCursor(html) {
   return null;
 }
 
-// ── Card set cache (per-set, 1 hour TTL) ──────────────────────────────────
+// ── Card set cache (per-set, 1 hour TTL, 50k entry limit with LRU eviction) ──
 const cardCache = new Map(); // slug → { data, fetchedAt }
+const CARD_CACHE_MAX_SIZE = 50000;
+
+function setCacheEntry(slug, entry) {
+  // If cache is at max size, evict the oldest entry (LRU)
+  if (cardCache.size >= CARD_CACHE_MAX_SIZE) {
+    let oldestSlug = null;
+    let oldestTime = Infinity;
+    for (const [key, val] of cardCache.entries()) {
+      if (val.fetchedAt < oldestTime) {
+        oldestTime = val.fetchedAt;
+        oldestSlug = key;
+      }
+    }
+    if (oldestSlug) cardCache.delete(oldestSlug);
+  }
+  cardCache.set(slug, entry);
+}
 
 async function fetchSetPages(slug) {
   // Check card cache
@@ -6714,6 +6731,8 @@ async function fetchSetPages(slug) {
   try {
     html1 = await httpGet(baseUrl);
   } catch (err) {
+    const cached = cardCache.get(slug);
+    if (cached) return { ...cached.data, fromCache: true, cachedAt: cached.fetchedAt };
     return { error: err.message, cards: [], count: 0 };
   }
 
@@ -6753,7 +6772,7 @@ async function fetchSetPages(slug) {
   const sealedItems = allCards.filter(c => c.sealed);
   const result = { slug, title, cards: allCards, count: allCards.length, sealedCount: sealedItems.length, source: baseUrl };
   if (allCards.length > 0) {
-    cardCache.set(slug, { data: result, fetchedAt: Date.now() });
+    setCacheEntry(slug, { data: result, fetchedAt: Date.now() });
   }
   return result;
 }
@@ -6806,7 +6825,7 @@ async function fetchSetPagesFresh(slug) {
   const sealedItems = allCards.filter(c => c.sealed);
   const result = { slug, title, cards: allCards, count: allCards.length, sealedCount: sealedItems.length, source: baseUrl };
   if (allCards.length > 0) {
-    cardCache.set(slug, { data: result, fetchedAt: Date.now() });
+    setCacheEntry(slug, { data: result, fetchedAt: Date.now() });
   }
   return result;
 }
