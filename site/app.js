@@ -538,6 +538,13 @@ function lookupTcgProduct(cardName) {
   const cached = S.tcgProductCache.get(cardName);
   if (cached !== undefined) return cached; // null or product
 
+  // Skip specialty cards with brackets (e.g., [GameStop], [Stamped]) - only show PriceCharting price
+  const hasSpecialtyBrackets = /\[.*\]/.test(cardName);
+  if (hasSpecialtyBrackets) {
+    S.tcgProductCache.set(cardName, null);
+    return null;
+  }
+
   // Skip sealed products - TCGPlayer scraper only returns individual cards
   const sealedKeywords = ['booster', 'box', 'blister', 'pack', 'bundle', 'collection', 'deck', 'tin', 'sleeve', 'binder'];
   const isSealed = sealedKeywords.some(kw => cardName.toLowerCase().includes(kw));
@@ -1966,8 +1973,16 @@ async function fetchAndStoreTCGPlayerProducts(gameKey, priceChartingSetName) {
       return;
     }
 
-    // Scrape all matching sets (usually just one)
-    for (const tcgSet of matchingSets) {
+    // If multiple sets match, prefer non-Promo variants
+    // (e.g., prefer "ME01: Mega Evolution" over "ME: Mega Evolution Promo")
+    let setsToScrape = matchingSets;
+    const nonPromoSets = matchingSets.filter(s => !s.name.match(/\bPromo\s*$/i));
+    if (nonPromoSets.length > 0) {
+      setsToScrape = nonPromoSets; // Use only non-Promo variants
+    }
+
+    // Scrape all matching sets (usually just one after promo filtering)
+    for (const tcgSet of setsToScrape) {
       const tcgSetParamName = normalizeToParamName(tcgSet.name);
 
       // Call server to scrape this game/set

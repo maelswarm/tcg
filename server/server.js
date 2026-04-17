@@ -7222,15 +7222,39 @@ async function fetchTCGPlayerGamesAndSets() {
           return sets;
         });
 
+        // Filter out Promo variants - prefer main sets over promotional variants
+        const setsByCanonical = {};
+        for (const set of gameSets) {
+          const canonical = normalizeSetName(set.name);
+          if (!setsByCanonical[canonical]) {
+            setsByCanonical[canonical] = [];
+          }
+          setsByCanonical[canonical].push(set);
+        }
+
+        // For each canonical name, prefer non-promo variants
+        const filteredSets = [];
+        for (const canonical in setsByCanonical) {
+          const variants = setsByCanonical[canonical];
+          // Sort so non-promo variants come first
+          variants.sort((a, b) => {
+            const aIsPromo = /\b(promo|promotional|pre-?release)\s*$/i.test(a.name);
+            const bIsPromo = /\b(promo|promotional|pre-?release)\s*$/i.test(b.name);
+            if (aIsPromo === bIsPromo) return 0;
+            return aIsPromo ? 1 : -1; // Non-promo comes first
+          });
+          filteredSets.push(variants[0]); // Keep only the first (non-promo preferred)
+        }
+
         // Normalize set names to canonical and param forms
-        gameSets.forEach(set => {
+        filteredSets.forEach(set => {
           set.canonical = normalizeSetName(set.name);
           set.paramName = normalizeToParamName(set.name);
           set.slug = set.canonical; // Use canonical as the URL slug
         });
 
-        result[gameKey].sets = gameSets;
-        const sampleSets = gameSets.slice(0, 3).map(s => s.name);
+        result[gameKey].sets = filteredSets;
+        const sampleSets = filteredSets.slice(0, 3).map(s => s.name);
 
         // Rate limiting between games
         await new Promise(resolve => setTimeout(resolve, 500));
