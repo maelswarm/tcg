@@ -235,6 +235,13 @@ const THEMES = [
     light:  { bg: '#faf5ff', surface: '#ffffff', surf2: '#fcf9ff', surf3: '#f0e8ff', surfhov: '#e8deff', divider: '#ddd0f5', border: '#cfc0e8', text: '#2a0a4a', muted: '#7a5aaa', faint: '#c0a8e0' },
     dark:   { bg: '#0a0515', surface: '#1a1a3a', surf2: '#2a1a4a', surf3: '#3a2a6a', surfhov: '#4a3a8a', divider: '#5a4aaa', border: '#7a6acc', text: '#ead0ff', muted: '#c8a8e0', faint: '#8060c0' },
   },
+  {
+    id: 'dark-mode',
+    name: 'Dark Mode',
+    icon: '🌙',
+    light:  { bg: '#1a1a1a', surface: '#2a2a2a', surf2: '#252525', surf3: '#202020', surfhov: '#1f1f1f', divider: '#323232', border: '#404040', text: '#e8e8e8', muted: '#a0a0a0', faint: '#606060' },
+    dark:   { bg: '#0d0d0d', surface: '#151515', surf2: '#1a1a1a', surf3: '#1f1f1f', surfhov: '#242424', divider: '#2a2a2a', border: '#353535', text: '#f0f0f0', muted: '#b8b8b8', faint: '#707070' },
+  },
 ];
 
 // ── Theme toggle with round-robin rotation ───────────────────────────────
@@ -1433,7 +1440,7 @@ if (API) {
 
           if (isExactMatch || isLooseMatch) {
             buildTcgProductTitleMap(tracking.products, data.game);
-            renderCards();
+            // Don't auto-render on socket signal; user controls view changes
           }
 
           delete _scrapingProducts[trackKey];
