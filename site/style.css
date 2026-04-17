@@ -32,64 +32,62 @@
   --game-accent-rgb: 255,232,31;
 }
 
-/* ── Dark (default) ─────────────────────────────── */
-:root, [data-theme="dark"] {
-  --bg:       #0c0c0e;
-  --surface:  #131315;
-  --surf2:    #191920;
-  --surf3:    #1f1f28;
-  --surfhov:  #23232d;
-  --divider:  #252530;
-  --border:   #32323e;
-
-  --text:     #e6e6ea;
-  --muted:    #9090a0;
-  --faint:    #50505e;
-  --inv:      #0c0c0e;
-
-  --primary:  #7dd3fc;
-  --success:  #4ade80;
-  --error:    #f87171;
-  --warn:     #fbbf24;
-
-  --sh-sm: 0 1px 4px rgba(0,0,0,0.5);
-  --sh-md: 0 4px 20px rgba(0,0,0,0.6);
-  --sh-lg: 0 12px 48px rgba(0,0,0,0.7);
+/* ── Themes (applied dynamically by JS with --theme-* vars) ──────────────────── */
+:root {
+  /* Default fallback */
+  --theme-bg:       #0f172a;
+  --theme-surface:  #1e293b;
+  --theme-surf2:    #334155;
+  --theme-surf3:    #475569;
+  --theme-surfhov:  #64748b;
+  --theme-divider:  #64748b;
+  --theme-border:   #94a3b8;
+  --theme-text:     #f1f5f9;
+  --theme-muted:    #cbd5e1;
+  --theme-faint:    #94a3b8;
 }
 
-/* ── Light ──────────────────────────────────────── */
-[data-theme="light"] {
-  --bg:       #f2f2f5;
-  --surface:  #ffffff;
-  --surf2:    #f7f7fa;
-  --surf3:    #ededf0;
-  --surfhov:  #e8e8ec;
-  --divider:  #e0e0e6;
-  --border:   #ccccd6;
+[data-theme-id] {
+  --bg:       var(--theme-bg);
+  --surface:  var(--theme-surface);
+  --surf2:    var(--theme-surf2);
+  --surf3:    var(--theme-surf3);
+  --surfhov:  var(--theme-surfhov);
+  --divider:  var(--theme-divider);
+  --border:   var(--theme-border);
+  --text:     var(--theme-text);
+  --muted:    var(--theme-muted);
+  --faint:    var(--theme-faint);
 
-  --text:     #1a1a24;
-  --muted:    #5a5a70;
-  --faint:    #aaaabc;
-  --inv:      #ffffff;
+  --primary:  #3b82f6;
+  --success:  #10b981;
+  --error:    #ef4444;
+  --warn:     #f59e0b;
 
-  --primary:  #0369a1;
-  --success:  #15803d;
-  --error:    #dc2626;
-  --warn:     #b45309;
-
-  --sh-sm: 0 1px 4px rgba(0,0,0,0.06);
-  --sh-md: 0 4px 20px rgba(0,0,0,0.08);
-  --sh-lg: 0 12px 48px rgba(0,0,0,0.1);
+  --sh-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --sh-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --sh-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
 }
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) {
-    --bg:#f2f2f5;--surface:#ffffff;--surf2:#f7f7fa;--surf3:#ededf0;
-    --surfhov:#e8e8ec;--divider:#e0e0e6;--border:#ccccd6;
-    --text:#1a1a24;--muted:#5a5a70;--faint:#aaaabc;--inv:#ffffff;
-    --primary:#0369a1;--success:#15803d;--error:#dc2626;--warn:#b45309;
-    --sh-sm:0 1px 4px rgba(0,0,0,0.06);--sh-md:0 4px 20px rgba(0,0,0,0.08);
-    --sh-lg:0 12px 48px rgba(0,0,0,0.1);
-  }
+
+/* Dark theme shadows (for dark backgrounds) */
+[data-theme-id="pokemon"],
+[data-theme-id="forest-pro"],
+[data-theme-id="ocean-pro"],
+[data-theme-id="mint"],
+[data-theme-id="warm-earth"] {
+  --sh-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --sh-md: 0 4px 6px rgba(0, 0, 0, 0.05);
+  --sh-lg: 0 10px 15px rgba(0, 0, 0, 0.05);
+}
+
+/* Deep dark shadows */
+[data-theme-id="lavender"],
+[data-theme-id="slate-dark"],
+[data-theme-id="amethyst"],
+[data-theme-id="coral"] {
+  --sh-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --sh-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+  --sh-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
 }
 
 /* ── Reset ──────────────────────────────────────── */
@@ -469,7 +467,15 @@ appkit-button::part(button) {
 }
 
 /* ── Table Wrap ──────────────────────────────────── */
-.table-wrap { overflow-x: auto; }
+.table-wrap {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.table-wrap::-webkit-scrollbar { width: 4px; }
+.table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
 .price-table { width: 100%; font-size: var(--text-xs); }
 .price-table thead { position: sticky; top: 0; z-index: 10; }
@@ -553,7 +559,7 @@ appkit-button::part(button) {
 .price-p10.gem { color: #ff8c42; }
 
 /* ── Dual-source pricing (merged rows) ────────────────────────────── */
-.price-source { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+.price-source { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.5rem; }
 .price-source:last-child { margin-bottom: 0; }
 
 .source-label {
@@ -643,6 +649,7 @@ appkit-button::part(button) {
   background: var(--surf3); border: 1px solid var(--border);
   border-radius: var(--r-md);
   transition: background var(--ease), color var(--ease), border-color var(--ease);
+  min-width: 140px;
 }
 .btn-load-all-stats:hover { background: var(--surfhov); color: var(--text); border-color: var(--game-accent); }
 .btn-load-all-stats:disabled { opacity: 0.5; cursor: not-allowed; }

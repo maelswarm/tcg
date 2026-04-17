@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+package-lock.json
 
 # Environment variables (contains secrets: DATABASE_URL, JWT_SECRET, STRIPE_SECRET_KEY, etc.)
 .env

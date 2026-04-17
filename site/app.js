@@ -8,6 +8,8 @@ const API = (() => {
   return (h === 'localhost' || h === '127.0.0.1') ? `http://${h}:3847` : '';
 })();
 
+let socket = null;
+
 // ── Game accent palette ──────────────────────────────────────────────────
 const ACCENTS = {
   pokemon:    { accent: '#ffcb05', dim: 'rgba(255,203,5,0.10)',   rgb: '255,203,5'   },
@@ -50,6 +52,9 @@ const S = {
   setStats: new Map(),
   cardCache: new Map(),
   tcgCards: new Map(), // normName → tcg card data
+  tcgAllProducts: new Map(), // productId → product metadata (from global fetch)
+  tcgAllProductsByTitle: new Map(), // normalized title → product (for fast O(1) lookup)
+  tcgProductCache: new Map(), // cardName → product (cache for lookupTcgProduct to avoid repeated calculations)
   userId: null,
   authToken: null,
   isAdmin: false,
@@ -165,24 +170,113 @@ const E = {
   cartModalBackdrop: g('cart-modal-backdrop'),
 };
 
-// ── Theme toggle ─────────────────────────────────────────────────────────
+// ── Color Themes (9 professional palettes with light/dark variants) ──────
+const THEMES = [
+  {
+    id: 'pokemon',
+    name: 'Pokémon',
+    icon: '⚡',
+    light:  { bg: '#fef9f3', surface: '#ffffff', surf2: '#faf7f0', surf3: '#f0eae0', surfhov: '#eae3d9', divider: '#e0dace', border: '#d4cac4', text: '#1a1a1a', muted: '#6b6b6b', faint: '#b8b8b8' },
+    dark:   { bg: '#0c0c0e', surface: '#131315', surf2: '#191920', surf3: '#1f1f28', surfhov: '#23232d', divider: '#252530', border: '#32323e', text: '#e6e6ea', muted: '#9090a0', faint: '#50505e' },
+  },
+  {
+    id: 'lavender',
+    name: 'Lavender',
+    icon: '💜',
+    light:  { bg: '#f8f5ff', surface: '#ffffff', surf2: '#faf8ff', surf3: '#f0e8ff', surfhov: '#e8deff', divider: '#ddd0f0', border: '#d1c3e8', text: '#1a0d3a', muted: '#6b5a8a', faint: '#b8a8d0' },
+    dark:   { bg: '#0f0820', surface: '#1a1a2e', surf2: '#2a1a4a', surf3: '#3a2a6a', surfhov: '#4a3a8a', divider: '#5a4a9a', border: '#7a6aaa', text: '#e8dff8', muted: '#c0a8e0', faint: '#7060a0' },
+  },
+  {
+    id: 'ocean-pro',
+    name: 'Ocean Pro',
+    icon: '🌊',
+    light:  { bg: '#f0f5fa', surface: '#ffffff', surf2: '#f5f9fd', surf3: '#e8f2f8', surfhov: '#ddeef5', divider: '#cce5f0', border: '#b8d9e8', text: '#0a2a4a', muted: '#4a7a9a', faint: '#a8c8d8' },
+    dark:   { bg: '#0c1120', surface: '#1a242d', surf2: '#1f3a52', surf3: '#2d545e', surfhov: '#3a6a80', divider: '#4a7a8a', border: '#5a8aa8', text: '#d0e8f8', muted: '#80b0d8', faint: '#5080b0' },
+  },
+  {
+    id: 'coral',
+    name: 'Coral Blush',
+    icon: '🌸',
+    light:  { bg: '#fff5f3', surface: '#ffffff', surf2: '#fdf9f8', surf3: '#f8e8e3', surfhov: '#f5ddd8', divider: '#ead0cc', border: '#dcc0b8', text: '#3a1515', muted: '#8a5555', faint: '#c8a8a0' },
+    dark:   { bg: '#1a0a08', surface: '#2a1515', surf2: '#3a2020', surf3: '#4a3030', surfhov: '#5a4040', divider: '#6a5050', border: '#8a6a60', text: '#f0d8d0', muted: '#d0a0a0', faint: '#a06060' },
+  },
+  {
+    id: 'forest-pro',
+    name: 'Forest',
+    icon: '🌲',
+    light:  { bg: '#f0f7f0', surface: '#ffffff', surf2: '#f5fbf5', surf3: '#e8f3e8', surfhov: '#dfeadf', divider: '#d0e0d0', border: '#c0d5c0', text: '#0a2e0a', muted: '#4a7a4a', faint: '#a8c8a8' },
+    dark:   { bg: '#0a140a', surface: '#1a2e1a', surf2: '#1f3a1f', surf3: '#2a4a2a', surfhov: '#345a34', divider: '#4a6a4a', border: '#5a8a5a', text: '#d0f0d0', muted: '#80c080', faint: '#608060' },
+  },
+  {
+    id: 'slate-dark',
+    name: 'Slate',
+    icon: '🩶',
+    light:  { bg: '#f3f4f6', surface: '#ffffff', surf2: '#f9fafb', surf3: '#f0f1f3', surfhov: '#e8eaed', divider: '#dfe0e3', border: '#d1d5db', text: '#1a1a1a', muted: '#6b7280', faint: '#b0b5bc' },
+    dark:   { bg: '#0f172a', surface: '#1e293b', surf2: '#334155', surf3: '#475569', surfhov: '#64748b', divider: '#64748b', border: '#94a3b8', text: '#f1f5f9', muted: '#cbd5e1', faint: '#94a3b8' },
+  },
+  {
+    id: 'warm-earth',
+    name: 'Warm Earth',
+    icon: '🌾',
+    light:  { bg: '#faf5ed', surface: '#ffffff', surf2: '#fdf9f3', surf3: '#f5ebe0', surfhov: '#ede3d8', divider: '#e0d5ca', border: '#d4c9ba', text: '#3a2415', muted: '#8a6d55', faint: '#c0a880' },
+    dark:   { bg: '#15100a', surface: '#2a2015', surf2: '#3a2a1a', surf3: '#4a3a28', surfhov: '#5a4a38', divider: '#6a5a48', border: '#8a7a68', text: '#e8dcd0', muted: '#b8a890', faint: '#886050' },
+  },
+  {
+    id: 'mint',
+    name: 'Mint Fresh',
+    icon: '🍃',
+    light:  { bg: '#f0fdf9', surface: '#ffffff', surf2: '#f5fefe', surf3: '#e8fbf8', surfhov: '#dff8f5', divider: '#cdf3f0', border: '#b8e8e5', text: '#0a3e38', muted: '#4a9090', faint: '#a8d8d5' },
+    dark:   { bg: '#051b19', surface: '#1a3a38', surf2: '#1f4a48', surf3: '#2a5a58', surfhov: '#346a68', divider: '#4a8a88', border: '#5ab0a8', text: '#d0f8f5', muted: '#80d0cc', faint: '#60a8a5' },
+  },
+  {
+    id: 'amethyst',
+    name: 'Amethyst',
+    icon: '💎',
+    light:  { bg: '#faf5ff', surface: '#ffffff', surf2: '#fcf9ff', surf3: '#f0e8ff', surfhov: '#e8deff', divider: '#ddd0f5', border: '#cfc0e8', text: '#2a0a4a', muted: '#7a5aaa', faint: '#c0a8e0' },
+    dark:   { bg: '#0a0515', surface: '#1a1a3a', surf2: '#2a1a4a', surf3: '#3a2a6a', surfhov: '#4a3a8a', divider: '#5a4aaa', border: '#7a6acc', text: '#ead0ff', muted: '#c8a8e0', faint: '#8060c0' },
+  },
+];
+
+// ── Theme toggle with round-robin rotation ───────────────────────────────
 (function() {
   const btn = document.querySelector('[data-theme-toggle]');
   const root = document.documentElement;
-  let theme = 'dark';
-  root.setAttribute('data-theme', theme);
-  function setIcon(t) {
-    if (!btn) return;
-    btn.setAttribute('aria-label', `Switch to ${t === 'dark' ? 'light' : 'dark'} mode`);
-    btn.innerHTML = t === 'dark'
-      ? `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`
-      : `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+  const THEME_KEY = 'tcg-theme-index';
+  let themeIndex = parseInt(localStorage.getItem(THEME_KEY) || '0', 10);
+
+  function applyTheme(index) {
+    const theme = THEMES[index];
+    const isDark = new Date().getHours() >= 18 || new Date().getHours() < 6; // dark if evening/night
+    const mode = localStorage.getItem('tcg-theme-mode') || 'auto';
+    const useDark = mode === 'dark' || (mode === 'auto' && isDark);
+    const colors = useDark ? theme.dark : theme.light;
+
+    root.setAttribute('data-theme-id', theme.id);
+    root.setAttribute('data-theme-name', theme.name);
+    root.style.setProperty('--theme-bg', colors.bg);
+    root.style.setProperty('--theme-surface', colors.surface);
+    root.style.setProperty('--theme-surf2', colors.surf2);
+    root.style.setProperty('--theme-surf3', colors.surf3);
+    root.style.setProperty('--theme-surfhov', colors.surfhov);
+    root.style.setProperty('--theme-divider', colors.divider);
+    root.style.setProperty('--theme-border', colors.border);
+    root.style.setProperty('--theme-text', colors.text);
+    root.style.setProperty('--theme-muted', colors.muted);
+    root.style.setProperty('--theme-faint', colors.faint);
+
+    if (btn) {
+      btn.setAttribute('aria-label', `Theme: ${theme.name} (${theme.icon})`);
+      btn.innerHTML = `<span style="font-size: 1.2em;">${theme.icon}</span>`;
+      btn.title = `Click to cycle themes (${index + 1}/${THEMES.length})`;
+    }
   }
-  setIcon(theme);
+
+  applyTheme(themeIndex);
+
   btn && btn.addEventListener('click', () => {
-    theme = theme === 'dark' ? 'light' : 'dark';
-    root.setAttribute('data-theme', theme);
-    setIcon(theme);
+    themeIndex = (themeIndex + 1) % THEMES.length;
+    localStorage.setItem(THEME_KEY, themeIndex.toString());
+    applyTheme(themeIndex);
   });
 })();
 
@@ -253,12 +347,272 @@ async function fetchGames() {
 }
 function normName(s) { return s.toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
-async function fetchTCGSet(slug, game) {
-  if (!API) return { cards: [] };
-  try {
-    const r = await fetch(`${API}/api/tcgset?slug=${encodeURIComponent(slug)}&game=${encodeURIComponent(game)}`);
-    return r.ok ? r.json() : { cards: [] };
-  } catch (_) { return { cards: [] }; }
+// Normalize set names to a canonical form that works for both PriceCharting and TCGPlayer
+// Examples: "SV: Scarlet & Violet Base Set" → "scarlet-violet"
+//           "Scarlet & Violet" → "scarlet-violet"
+//           "SV01: Scarlet & Violet Base Set" → "scarlet-violet"
+function normalizeSetName(name) {
+  let normalized = name.toLowerCase();
+
+  // Remove common suffixes and prefixes
+  normalized = normalized
+    .replace(/\b(base\s+set|promo\s+cards?|promotional|pre-?release|promos?)\b/gi, '')
+    .replace(/^[a-z0-9]+[:\s-]+/i, '') // Remove prefixes like "SV:", "SV01:", "ME01:"
+    .replace(/\s*[-&]\s*\d+\/\d+.*$/i, ''); // Remove card numbers and variants
+
+  // Remove special characters and normalize spacing
+  normalized = normalized
+    .replace(/[^a-z0-9\s]/g, '') // Remove special characters
+    .replace(/\s+/g, '-') // Replace spaces with dashes
+    .replace(/-+/g, '-') // Collapse multiple dashes
+    .replace(/^-|-$/g, '') // Remove leading/trailing dashes
+    .trim();
+
+  return normalized || name.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 20); // Fallback
+}
+
+// Create a paramName from original name: alphanumeric + dashes only
+// Special case: ampersands become the word "and"
+// Examples: "SV: Scarlet & Violet Base Set" → "sv-scarlet-and-violet-base-set"
+//           "SV01: Scarlet & Violet" → "sv01-scarlet-and-violet"
+function normalizeToParamName(name) {
+  return name
+    .toLowerCase()
+    .replace(/\s*&\s*/g, ' and ') // Replace & with " and "
+    .replace(/[^a-z0-9\s]/g, '') // Remove special characters
+    .replace(/\s+/g, '-') // Replace spaces with dashes
+    .replace(/-+/g, '-') // Collapse multiple dashes
+    .replace(/^-|-$/g, '') // Remove leading/trailing dashes
+    .trim();
+}
+
+// Parse TCGPlayer card metadata from scraped text format
+function parseTcgCardData(rawName) {
+  const obj = { cardName: null, rarity: null, cardNum: null, lowPrice: null, marketPrice: null, listings: null };
+
+  // Extract market price: "Market Price:$2.92"
+  const marketMatch = rawName.match(/Market\s*Price:?\s*\$([0-9.]+)/);
+  if (marketMatch) obj.marketPrice = parseFloat(marketMatch[1]);
+
+  // Extract low price: "from $0.25"
+  const lowMatch = rawName.match(/from\s*\$([0-9.]+)/);
+  if (lowMatch) obj.lowPrice = parseFloat(lowMatch[1]);
+
+  // Extract listings: "1003 listings"
+  const listingsMatch = rawName.match(/(\d+)\s*listings?/i);
+  if (listingsMatch) obj.listings = parseInt(listingsMatch[1], 10);
+
+  // Extract card number: "#024/102"
+  const numMatch = rawName.match(/#(\d+\/\d+)/);
+  if (numMatch) obj.cardNum = numMatch[1];
+
+  // Extract rarity (Common, Uncommon, Rare, etc.)
+  const rarityMatch = rawName.match(/(Common|Uncommon|Rare|Secret|Holo)/);
+  if (rarityMatch) obj.rarity = rarityMatch[1];
+
+  // Extract card name (between card number and "listings")
+  if (numMatch && listingsMatch) {
+    const startIdx = rawName.indexOf(numMatch[0]) + numMatch[0].length;
+    const endIdx = rawName.indexOf(listingsMatch[0]);
+    if (startIdx < endIdx) {
+      obj.cardName = rawName.substring(startIdx, endIdx).trim();
+    }
+  }
+
+  return obj;
+}
+
+// Levenshtein distance for fuzzy matching — optimized with early exit
+function levenshteinDistance(a, b) {
+  const aLower = a.toLowerCase();
+  const bLower = b.toLowerCase();
+  const m = aLower.length, n = bLower.length;
+
+  // Early exit for identical strings or very long differences
+  if (aLower === bLower) return 0;
+  if (Math.abs(m - n) > Math.max(m, n) * 0.5) return Math.max(m, n);
+
+  const dp = Array(m + 1).fill(0).map(() => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = aLower[i - 1] === bLower[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+// Extract game key from TCGPlayer product URL
+function extractGameFromTcgUrl(url) {
+  if (!url) return null;
+  if (url.includes('/pokemon-')) return 'pokemon';
+  if (url.includes('/magic-')) return 'mtg';
+  if (url.includes('/one-piece-card-game-')) return 'onepiece';
+  if (url.includes('/yugioh-')) return 'yugioh';
+  if (url.includes('/dragon-ball-super-')) return 'dragonball';
+  if (url.includes('/digimon-')) return 'digimon';
+  if (url.includes('/lorcana-')) return 'lorcana';
+  if (url.includes('/gundam-')) return 'gundam';
+  if (url.includes('/star-wars-')) return 'swu';
+  if (url.includes('/riftbound-')) return 'riftbound';
+  return null;
+}
+
+function buildTcgProductTitleMap(products, forceGame = null) {
+  S.tcgAllProductsByTitle.clear();
+  S.tcgAllProducts.clear();
+  S.tcgProductCache.clear(); // Clear lookup cache since products changed
+
+  let indexed = 0;
+  let withPrices = 0;
+
+  for (const product of products) {
+    if (!product.title && !product.name) continue;
+
+    // Extract game from URL or use forced game (passed from socket event)
+    const game = forceGame || extractGameFromTcgUrl(product.url);
+
+    // Parse the scraped data for prices
+    const parsed = parseTcgCardData(product.title || product.name);
+
+    // Use the server-extracted cardName if available, don't re-parse from title
+    const cardName = product.cardName || parsed.cardName;
+    const cardNumber = product.cardNumber || parsed.cardNum;
+
+    // Use card name as the lookup key if available
+    if (cardName) {
+      // Create composite key: name|number to avoid collisions (e.g., "mega charizard x ex|13")
+      const nameKey = cardName.toLowerCase().trim();
+      const numberPart = cardNumber ? cardNumber.split('/')[0] : ''; // Extract just the card number (e.g., "13" from "13/102")
+      const key = numberPart ? `${nameKey}|${numberPart}` : nameKey;
+
+      const finalMarketPrice = product.marketPrice || parsed.marketPrice;
+      const finalLowPrice = product.lowPrice || parsed.lowPrice;
+
+      S.tcgAllProductsByTitle.set(key, {
+        ...product,
+        parsed,
+        game,
+        marketPrice: finalMarketPrice,
+        lowPrice: finalLowPrice,
+        cardName: cardName,
+        cardNumber: cardNumber,
+        foil: product.foil,
+      });
+      indexed++;
+
+      // Track products with prices
+      if (finalMarketPrice || finalLowPrice) {
+        withPrices++;
+        // Log first few products with prices for debugging
+        if (withPrices <= 3) {
+        }
+      }
+    }
+
+    S.tcgAllProducts.set(product.id, { ...product, game, foil: product.foil });
+  }
+}
+
+// Extract card number from PriceCharting card name (e.g., "Pikachu #025/102" → "025" or "Pikachu #125" → "125")
+function extractCardNumber(cardName) {
+  const match = cardName.match(/#(\d+(?:\/\d+)?)/);  // Matches both #123/456 and #123
+  return match ? match[1] : null;
+}
+
+// Weighted scoring algorithm for card matching
+// Scores all candidate products and returns the best match (highest score)
+// Results are cached to avoid recalculating for the same card name across renders
+function lookupTcgProduct(cardName) {
+  // Check cache first
+  const cached = S.tcgProductCache.get(cardName);
+  if (cached !== undefined) return cached; // null or product
+
+  // Skip sealed products - TCGPlayer scraper only returns individual cards
+  const sealedKeywords = ['booster', 'box', 'blister', 'pack', 'bundle', 'collection', 'deck', 'tin', 'sleeve', 'binder'];
+  const isSealed = sealedKeywords.some(kw => cardName.toLowerCase().includes(kw));
+  if (isSealed) {
+    S.tcgProductCache.set(cardName, null); // Cache miss
+    return null;
+  }
+
+  const pcCardNum = extractCardNumber(cardName);
+  const currentGame = S.game;
+
+  const cardNameOnly = cardName.replace(/#\d+(?:\/\d+)?/, '').trim();
+  let normalized = cardNameOnly.toLowerCase().trim();
+  // Normalize variant names: remove parentheses, normalize "ex" spacing
+  normalized = normalized.replace(/\s*\([^)]*\)/g, '') // Remove "(non-holo)" etc.
+                         .replace(/\s+(ex|EX|v|V)\s*$/g, ' $1') // Normalize ex/v spacing
+                         .replace(/\s+/g, ' '); // Collapse multiple spaces
+  const pcCardNumBase = pcCardNum ? pcCardNum.split('/')[0] : null; // e.g., "13" from "13/102"
+
+  let bestProduct = null;
+  let bestScore = -Infinity;
+
+  if (S.tcgAllProductsByTitle.size === 0) {
+    S.tcgProductCache.set(cardName, null); // Cache miss
+    return null;
+  }
+
+  // Evaluate all products in the current game
+  for (const [key, prod] of S.tcgAllProductsByTitle.entries()) {
+    // Only consider products from current game
+    if (prod.game !== currentGame) continue;
+
+    let score = 0;
+
+    // Extract name and number from composite key, normalize the key name
+    const [keyNameRaw, keyNum] = key.includes('|') ? key.split('|') : [key, null];
+    // Normalize variant names for better matching
+    const keyName = keyNameRaw.replace(/\s*\([^)]*\)/g, '') // Remove "(non-holo)" etc.
+                              .replace(/\s+(ex|EX|v|V)\s*$/g, ' $1') // Normalize ex/v spacing
+                              .replace(/\s+/g, ' '); // Collapse multiple spaces
+
+    // Weight 1: Exact card number match (highest priority) — normalize to handle leading zeros
+    if (pcCardNumBase && keyNum) {
+      const pcNum = parseInt(pcCardNumBase, 10);
+      const keyNumInt = parseInt(keyNum, 10);
+      if (pcNum === keyNumInt) {
+        score += 100; // Exact match (handles "056" === "56")
+      } else {
+        score -= 50; // Number mismatch is a red flag
+      }
+    }
+
+    // Weight 2: Name similarity via Levenshtein distance
+    // Convert distance to similarity score (0-100, higher is better)
+    const dist = levenshteinDistance(normalized, keyName);
+    const maxDist = Math.max(normalized.length, keyName.length);
+    const nameSimilarity = Math.max(0, 100 - (dist / maxDist) * 100);
+    score += nameSimilarity * 0.8; // Name is important but not as much as number
+
+    // Weight 3: Penalize if PC has no number but product has one (could be wrong variant)
+    if (!pcCardNum && keyNum) {
+      score -= 10;
+    }
+
+    // Keep track of best match
+    if (score > bestScore) {
+      bestScore = score;
+      bestProduct = prod;
+    }
+  }
+
+  // Accept match only if score is reasonable (indicates decent similarity)
+  // Threshold: lower if we have excellent name match + number match
+  const hasExactNumberMatch = pcCardNumBase && bestProduct ?
+    (parseInt(pcCardNumBase, 10) === parseInt(bestProduct.cardNumber?.split('/')[0] || '', 10)) : false;
+  const minThreshold = hasExactNumberMatch ? 50 : 65; // More lenient with exact number match
+  const result = bestScore >= minThreshold ? bestProduct : null;
+
+  // Cache the result (even if null)
+  S.tcgProductCache.set(cardName, result);
+
+  return result;
 }
 
 async function fetchSet(slug, force = false) {
@@ -292,7 +646,7 @@ function buildGameTabs() {
   });
 }
 
-function switchGame(key) {
+async function switchGame(key) {
   if (key === S.game) return;
   S.game = key;
   S.slug = null;
@@ -300,7 +654,7 @@ function switchGame(key) {
   S.visibleCards = [];
   S.query = '';
   S.setQuery = '';
-  loadStatsFromStorage(); // load stats for new game (keep other games' stats)
+  await loadStatsFromStorage(); // load stats for new game (keep other games' stats)
   E.cardSearch.value = '';
   E.setSearch.value = '';
 
@@ -395,7 +749,7 @@ function renderSetList() {
 }
 
 // ── Load set ───────────────────────────────────────────────────────────────
-async function loadSet(slug, name, btn) {
+async function loadSet(slug, name, btn, force = false) {
   // Exit other views if active (loadSet will handle the state transition itself)
   if (S.setsView) exitSetsView(false);
   if (S.saleView) exitSaleView(false);
@@ -406,6 +760,7 @@ async function loadSet(slug, name, btn) {
     // Set already loaded — just make sure the table is visible (e.g. navigating from sets view)
     renderCards();
     updateStats();
+    pushState(); // Update URL in case we're coming from a different view
     return;
   }
   S.slug = slug;
@@ -477,18 +832,54 @@ async function loadSet(slug, name, btn) {
 
     // Clear stale TCG data before rendering, then fetch in background
     S.tcgCards.clear();
+    S.cardCache.clear();  // Clear PriceCharting cache so we don't re-save cards from other sets
+
+    // Load TCGPlayer products for this set into the lookup map
+    try {
+      const canonical = normalizeSetName(name);
+      const setData = await TCGDb.get('tcgplayer-products', [S.game, canonical]);
+      const products = setData?.products;
+      const isCacheStale = setData && (Date.now() - (setData.scrapedAt || 0) > CACHE_TTL_MS);
+
+      if (products && products.length > 0 && !isCacheStale) {
+        buildTcgProductTitleMap(products, S.game);
+      } else {
+        // No products or cache is stale, request fresh scraping
+        await fetchAndStoreTCGPlayerProducts(S.game, name);
+        // After scrape request, check if data arrived via socket (may not be immediate)
+        const updatedData = await TCGDb.get('tcgplayer-products', [S.game, canonical]);
+        if (updatedData?.products && updatedData.products.length > 0) {
+          buildTcgProductTitleMap(updatedData.products, S.game);
+        }
+      }
+    } catch (e) {}
+
     renderCards();
     updateStats();
     pushState();
 
-    // Kick off TCGPlayer fetch in background — re-renders when it arrives
-    const tcgLid = S.loadId;
-    fetchTCGSet(slug, S.game).then(tcgData => {
-      if (S.loadId !== tcgLid) return; // stale — user switched set
-      S.tcgCards.clear();
-      for (const c of (tcgData.cards || [])) S.tcgCards.set(normName(c.name), c);
-      renderCards();
-    });
+    // Check IndexedDB for cached TCGPlayer data first
+    if (!force) {
+      try {
+        const tcgKey = `${S.game}|${slug}`;
+        const rec = await TCGDb.get('tcgplayer-cards', tcgKey);
+        if (rec?.cards && (Date.now() - (rec.cachedAt || 0)) < CACHE_TTL_MS) {
+          // Cache hit! Load from IndexedDB
+          S.tcgCards.clear();
+          for (const c of rec.cards) {
+            // Use server-extracted cardName if available, otherwise parse from title
+            const cardName = c.cardName || (parseTcgCardData(c.title || c.name).cardName);
+            if (cardName) {
+              const keyName = normName(cardName);
+              S.tcgCards.set(keyName, c);
+            }
+          }
+          renderCards();
+        }
+      } catch (e) {
+      }
+    }
+
   } catch (err) {
     if (lid !== S.loadId) return;
     if (btn) btn.classList.remove('loading', 'active');
@@ -552,7 +943,7 @@ async function restoreFromUrl() {
   if (gameKey !== S.game) {
     S.game = gameKey;
     applyAccent(gameKey);
-    loadStatsFromStorage();
+    await loadStatsFromStorage();
     buildGameTabs();
     if (E.gameDropdownLabel && S.games[gameKey]) {
       E.gameDropdownLabel.textContent = S.games[gameKey].label;
@@ -569,6 +960,8 @@ async function restoreFromUrl() {
     S.setsView = true;
     S.saleView = false;
     S.inventoryView = false;
+    S.slug = null;
+    S.allCards = [];
     E.btnViewSets.classList.add('active');
     E.btnViewSale.classList.remove('active');
     E.cardSearch.value = '';
@@ -584,6 +977,8 @@ async function restoreFromUrl() {
     S.saleView = true;
     S.setsView = false;
     S.inventoryView = false;
+    S.slug = null;
+    S.allCards = [];
     E.btnViewSale.classList.add('active');
     E.btnViewSets.classList.remove('active');
     E.cardSearch.value = '';
@@ -599,6 +994,8 @@ async function restoreFromUrl() {
     S.inventoryView = true;
     S.setsView = false;
     S.saleView = false;
+    S.slug = null;
+    S.allCards = [];
     E.btnInventory.classList.add('active');
     E.btnViewSets.classList.remove('active');
     E.btnViewSale.classList.remove('active');
@@ -899,7 +1296,7 @@ E.setSearch.addEventListener('input', e => {
 E.btnRetry.addEventListener('click', () => {
   if (S.slug) {
     const btn = document.querySelector(`.set-item[data-slug="${CSS.escape(S.slug)}"]`);
-    loadSet(S.slug, btn ? btn.dataset.name : S.slug, btn);
+    loadSet(S.slug, btn ? btn.dataset.name : S.slug, btn, true); // force=true for both PC and TCG caches
   }
 });
 
@@ -958,11 +1355,11 @@ async function refreshCacheNow() {
     // Update status
     await updateCachePill();
 
-    // If a set is currently loaded, reload its card prices
+    // If a set is currently loaded, reload its card prices with force refresh
     if (S.slug) {
       S.allCards = [];
       const btn = document.querySelector(`.set-item[data-slug="${CSS.escape(S.slug)}"]`);
-      await loadSet(S.slug, btn ? btn.dataset.name : S.slug, btn);
+      await loadSet(S.slug, btn ? btn.dataset.name : S.slug, btn, true); // force=true for both PC and TCG
     }
 
     // If sets overview is open, load all stats
@@ -979,96 +1376,137 @@ async function refreshCacheNow() {
 }
 
 // ── LocalStorage: Set stats cache ─────────────────────────────────────────
-const LS_STATS_KEY = 'tcg-set-stats-v2';
-const LS_STATS_TTL_MS = 60 * 60 * 1000; // 1 hour (matches server cache)
-const LS_PRODUCTS_KEY = 'tcg-products-v1';
-const LS_PRODUCTS_TTL_MS = 60 * 60 * 1000; // 1 hour (matches server cache)
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour (matches server cache)
 
-function loadStatsFromStorage() {
-  try {
-    const raw = localStorage.getItem(LS_STATS_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return;
+// Track accumulating products from socket events
+const _scrapingProducts = {};
 
-    // Extract stats for current game
-    const gameStats = parsed[S.game];
-    if (!gameStats || typeof gameStats !== 'object') return;
+// Initialize Socket.io after constants are defined
+if (API) {
+  const script = document.createElement('script');
+  script.src = '/socket.io/socket.io.js';
+  script.onload = () => {
+    socket = io(API, { reconnection: true });
 
-    const now = Date.now();
-    let loaded = 0, expired = 0;
-    for (const [slug, rec] of Object.entries(gameStats)) {
-      if (!rec || typeof rec !== 'object') continue;
-      if (now - (rec.cachedAt || 0) > LS_STATS_TTL_MS) { expired++; continue; }
-      const { cachedAt, ...stats } = rec;
-      S.setStats.set(slug, stats);
-      loaded++;
-    }
-    if (expired > 0) saveStatsToStorage(); // rewrite without expired entries
-  } catch (e) {
-  }
+    // Listen for TCGPlayer page scrape events - accumulate products
+    socket.on('tcgplayer:page-scraped', (data) => {
+      try {
+        const trackKey = `${data.game}|${data.slug}`;
+        if (!_scrapingProducts[trackKey]) {
+          _scrapingProducts[trackKey] = { products: [], setOriginalName: data.setOriginalName };
+        }
+        _scrapingProducts[trackKey].products.push(...data.cards);
+      } catch (e) {}
+    });
+
+    // When scraping completes, store accumulated products to IndexedDB
+    socket.on('tcgplayer:scrape-complete', async (data) => {
+      try {
+        const trackKey = `${data.game}|${data.slug}`;
+        const tracking = _scrapingProducts[trackKey];
+        if (tracking && tracking.products.length > 0) {
+          const canonical = normalizeSetName(tracking.setOriginalName);
+
+          const storeData = {
+            products: tracking.products,
+            originalName: tracking.setOriginalName,
+            canonical: canonical,
+            paramName: data.slug,
+            scrapedAt: Date.now()
+          };
+
+          await TCGDb.put('tcgplayer-products', [data.game, canonical], storeData);
+
+          // Also store to tcgplayer-cards for per-set lookups
+          await TCGDb.put('tcgplayer-cards', trackKey, {
+            cards: tracking.products,
+            cachedAt: Date.now()
+          });
+
+          // If this is the current set, refresh the lookup map
+          const currentSetTitle = E.setTitle.textContent;
+          const currentSetCanonical = normalizeSetName(currentSetTitle);
+
+          // Try two comparisons: exact canonical match, OR loose game+set match
+          const isExactMatch = data.game === S.game && canonical === currentSetCanonical;
+          const isLooseMatch = data.game === S.game && (canonical.includes(currentSetCanonical) || currentSetCanonical.includes(canonical));
+
+          if (isExactMatch || isLooseMatch) {
+            buildTcgProductTitleMap(tracking.products, data.game);
+            renderCards();
+          }
+
+          delete _scrapingProducts[trackKey];
+        }
+      } catch (e) {}
+    });
+  };
+  document.head.appendChild(script);
 }
 
-let saveStatsTimer = null;
-function saveStatsToStorage() {
-  clearTimeout(saveStatsTimer);
-  saveStatsTimer = setTimeout(() => {
-    try {
-      const raw = localStorage.getItem(LS_STATS_KEY);
-      let data = {};
-      try {
-        if (raw) data = JSON.parse(raw);
-      } catch {}
+async function loadStatsFromStorage() {
+  try {
+    const data = await TCGDb.get('set-stats', 'all');
+    if (!data) return;
+    const gameStats = data[S.game] || {};
+    if (typeof gameStats !== 'object') return;
+    const now = Date.now();
+    let expired = 0;
+    for (const [slug, rec] of Object.entries(gameStats)) {
+      if (!rec || typeof rec !== 'object') continue;
+      if (now - (rec.cachedAt || 0) > CACHE_TTL_MS) { expired++; continue; }
+      S.setStats.set(slug, rec);
+    }
+    if (expired > 0) saveStatsToStorage();
+  } catch (e) {}
+}
 
-      // Update only current game's stats, preserve other games
-      const entries = {};
+let _saveStatsTimer = null;
+function saveStatsToStorage() {
+  clearTimeout(_saveStatsTimer);
+  _saveStatsTimer = setTimeout(async () => {
+    try {
+      const data = (await TCGDb.get('set-stats', 'all')) || {};
       const now = Date.now();
+      const entries = {};
       for (const [slug, stats] of S.setStats.entries()) {
         entries[slug] = { ...stats, cachedAt: stats.cachedAt || now };
       }
       data[S.game] = entries;
-
-      localStorage.setItem(LS_STATS_KEY, JSON.stringify(data));
-    } catch (e) {
-    }
+      await TCGDb.put('set-stats', 'all', data);
+    } catch (e) {}
   }, 300);
 }
 
-function loadProductsFromStorage() {
+async function loadProductsFromStorage() {
   try {
-    const raw = localStorage.getItem(LS_PRODUCTS_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return;
-
+    const all = await TCGDb.getAll('price-products');
     const now = Date.now();
-    let loaded = 0, expired = 0;
-    for (const [cacheKey, rec] of Object.entries(parsed)) {
-      if (!rec || typeof rec !== 'object' || !rec.card) continue;
-      if (now - (rec.cachedAt || 0) > LS_PRODUCTS_TTL_MS) { expired++; continue; }
-      S.cardCache.set(cacheKey, rec.card);
-      loaded++;
+    let expired = 0;
+    for (const { key, value } of all) {
+      if (!value?.card) continue;
+      if (now - (value.cachedAt || 0) > CACHE_TTL_MS) { expired++; continue; }
+      S.cardCache.set(key, value.card);
     }
-    if (expired > 0) saveProductsToStorage(); // rewrite without expired entries
-  } catch (e) {
-  }
+    if (expired > 0) saveProductsToStorage();
+  } catch (e) {}
 }
 
-let saveProductsTimer = null;
+let _saveProductsTimer = null;
 function saveProductsToStorage() {
-  clearTimeout(saveProductsTimer);
-  saveProductsTimer = setTimeout(() => {
+  clearTimeout(_saveProductsTimer);
+  _saveProductsTimer = setTimeout(async () => {
     try {
-      const entries = {};
       const now = Date.now();
-      for (const [cacheKey, card] of S.cardCache.entries()) {
-        entries[cacheKey] = { card, cachedAt: now };
+      await TCGDb.clear('price-products');
+      for (const [key, card] of S.cardCache.entries()) {
+        await TCGDb.put('price-products', key, { card, cachedAt: now });
       }
-      localStorage.setItem(LS_PRODUCTS_KEY, JSON.stringify(entries));
-    } catch (e) {
-    }
+    } catch (e) {}
   }, 500);
 }
+
+
 
 // ── Sets Overview ─────────────────────────────────────────────────────────
 function calcStats(cards) {
@@ -1111,6 +1549,7 @@ function enterSetsView() {
   S.setsView = true;
   S.saleView = false;
   S.inventoryView = false;
+  S.slug = null; // Clear the selected set when entering sets view
   E.btnViewSets.classList.add('active');
   E.btnViewSale.classList.remove('active');
   E.btnInventory.classList.remove('active');
@@ -1266,8 +1705,16 @@ function filterSaleView(query) {
   });
 }
 
+function setSpinnersInRow(cells) {
+  for (let i = 2; i <= 5; i++) {
+    cells[i].innerHTML = '<span class="sov-spinner"></span>';
+  }
+  cells[6].innerHTML = '';
+}
+
 function markQueuedRows(gameKey) {
-  // Mark row that is currently processing (in-flight) with spinners and restore row references
+  // Mark row that is currently processing (in-flight) with spinners.
+  // IMPORTANT: Only update in-flight spinners, leave cached data intact for queued/idle items.
   const q = getGameQueue(gameKey);
   const queuedSlugs = new Set(q.queue.map(item => item.slug));
 
@@ -1275,24 +1722,26 @@ function markQueuedRows(gameKey) {
     const cells = row.querySelectorAll('td');
     if (cells.length >= 7) {
       if (q.inFlight && q.inFlight.slug === row.dataset.slug) {
-        // Show spinners only on the item currently being processed
-        cells[2].innerHTML = '<span class="sov-spinner"></span>';
-        cells[3].innerHTML = '<span class="sov-spinner"></span>';
-        cells[4].innerHTML = '<span class="sov-spinner"></span>';
-        cells[5].innerHTML = '<span class="sov-spinner"></span>';
-        cells[6].innerHTML = '';
-      } else if (queuedSlugs.has(row.dataset.slug)) {
-        // Just restore row reference for queued items (no spinners)
-        const item = q.queue.find(i => i.slug === row.dataset.slug);
-        if (item) item.row = row;
+        // IN-FLIGHT: Show spinners, hide action button
+        setSpinnersInRow(cells);
+        row.classList.add('loading');
+      } else {
+        // NOT IN-FLIGHT: Restore row reference, mark as queued if in queue
+        row.classList.remove('loading');
+        // Restore row reference for queued items
+        if (queuedSlugs.has(row.dataset.slug)) {
+          const item = q.queue.find(i => i.slug === row.dataset.slug);
+          if (item) item.row = row;
+          row.classList.add('queued');
+        } else {
+          row.classList.remove('queued');
+        }
+        // Do NOT clear cells — let cached data (or empty state) from renderSetsBatch() show
       }
     }
   });
 
-  // Resume processing for this game if queue has items and not already processing
-  if (q.queue.length > 0 && !q.processing) {
-    processLoadQueue(gameKey);
-  }
+  // Disable auto-resume — queue only processes on explicit "Load All Sets" click
 }
 
 function renderSetsOverview() {
@@ -1311,19 +1760,19 @@ function renderSetsOverview() {
   // Load first batch
   loadMoreItems('sets');
 
-  // Mark queued rows after initial render
-  setTimeout(() => markQueuedRows(S.game), 0);
+  // Mark queued rows and restore queue UI after initial render
+  setTimeout(() => {
+    markQueuedRows(S.game);
+    restoreQueueUI();
+    // Disable auto-resume — queue only processes on explicit "Load All Sets" click
+  }, 0);
 }
 
 async function loadSetStatsRow(slug, name, row, force = false) {
   // Show spinners in stat cells
   const cells = row.querySelectorAll('td');
   if (cells.length >= 7) {
-    cells[2].innerHTML = '<span class="sov-spinner"></span>';
-    cells[3].innerHTML = '<span class="sov-spinner"></span>';
-    cells[4].innerHTML = '<span class="sov-spinner"></span>';
-    cells[5].innerHTML = '<span class="sov-spinner"></span>';
-    cells[6].innerHTML = '';
+    setSpinnersInRow(cells);
   }
   // Server handles HTTP retries. We only retry here once if we get 0 cards
   // back while forcing a refresh — a fallback to the cached copy.
@@ -1350,6 +1799,7 @@ async function loadSetStatsRow(slug, name, row, force = false) {
       saveStatsToStorage();
       saveProductsToStorage();
       updateSovRow(row, stats);
+
       return;
     }
   } catch {
@@ -1375,13 +1825,164 @@ function getGameQueue(gameKey) {
   return loadQueues[gameKey];
 }
 
+const LS_LOAD_QUEUES_KEY = 'tcg-load-queues';
+
 function saveQueuesToStorage() {
-  // Queue state is not persisted to storage
+  try {
+    const data = {};
+    for (const [gameKey, q] of Object.entries(loadQueues)) {
+      // Store queue items (without DOM row refs) and in-flight state
+      data[gameKey] = {
+        queue: q.queue.map(item => ({ slug: item.slug, name: item.name })),
+        inFlight: q.inFlight
+      };
+    }
+    localStorage.setItem(LS_LOAD_QUEUES_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.error('[Queue] Failed to save to localStorage:', e);
+  }
 }
 
 function loadQueuesFromStorage() {
-  // Queue state is not persisted to storage
-  return [];
+  // NOTE: Queue state is restored on page refresh to resume in-flight operations
+  try {
+    const raw = localStorage.getItem(LS_LOAD_QUEUES_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      for (const [gameKey, state] of Object.entries(data)) {
+        const q = getGameQueue(gameKey);
+        q.queue = state.queue || [];
+        q.inFlight = state.inFlight || null;
+      }
+    }
+  } catch (e) {
+    console.error('[Queue] Failed to restore from localStorage:', e);
+  }
+}
+
+function restoreQueueUI() {
+  // Call this AFTER renderSetsOverview() to render spinners for queued/in-flight items
+  const q = getGameQueue(S.game);
+  const queuedSlugs = new Set(q.queue.map(item => item.slug));
+
+  E.setsOvTbody.querySelectorAll('tr[data-slug]').forEach(row => {
+    const cells = row.querySelectorAll('td');
+    if (cells.length >= 7) {
+      if (q.inFlight && q.inFlight.slug === row.dataset.slug) {
+        // Show spinners for the in-flight item using innerHTML (same as normal flow)
+        setSpinnersInRow(cells);
+        // Force reflow to trigger animation
+        void cells[2].offsetHeight;
+        // Restore row reference so processLoadQueue can use it
+        q.inFlight.row = row;
+      } else if (queuedSlugs.has(row.dataset.slug)) {
+        // Mark queued items (spinners only show on in-flight item)
+        row.classList.add('queued');
+        // Restore row references for queued items
+        const item = q.queue.find(i => i.slug === row.dataset.slug);
+        if (item) item.row = row;
+      }
+    }
+  });
+}
+
+// Get TCGPlayer metadata for a set
+async function getTCGPlayerSetMetadata(gameKey, canonicalSetName) {
+  try {
+    const setData = await TCGDb.get('tcgplayer-products', [gameKey, canonicalSetName]);
+    if (setData) {
+      return {
+        originalName: setData.originalName || canonicalSetName,
+        canonical: setData.canonical || canonicalSetName,
+        paramName: setData.paramName || normalizeToParamName(setData.originalName || canonicalSetName),
+        scrapedAt: setData.scrapedAt
+      };
+    }
+  } catch (e) {}
+  return null;
+}
+
+// Get TCGPlayer original set name from storage (returns original or canonical if original not found)
+async function getTCGPlayerSetName(gameKey, canonicalSetName) {
+  const m = await getTCGPlayerSetMetadata(gameKey, canonicalSetName);
+  return m?.originalName || canonicalSetName;
+}
+
+// Get TCGPlayer paramName for a set
+async function getTCGPlayerSetParamName(gameKey, canonicalSetName) {
+  const m = await getTCGPlayerSetMetadata(gameKey, canonicalSetName);
+  return m?.paramName || canonicalSetName;
+}
+
+// Get TCGPlayer products for a game/set
+async function getTCGPlayerProducts(gameKey, canonicalSetName) {
+  try {
+    const setData = await TCGDb.get('tcgplayer-products', [gameKey, canonicalSetName]);
+    return setData?.products || null;
+  } catch (e) {}
+  return null;
+}
+
+async function fetchAndStoreTCGPlayerProducts(gameKey, priceChartingSetName) {
+  try {
+    // Get TCGPlayer game/set mapping from IndexedDB, or fetch if not cached
+    let gamesSets = await TCGDb.get('games-sets', 'all');
+    if (!gamesSets) {
+      try {
+        const response = await fetch(`${API}/api/tcgplayer/games-sets`);
+        if (response.ok) {
+          const data = await response.json();
+          gamesSets = { games: data.games || {}, cachedAt: Date.now() };
+          await TCGDb.put('games-sets', 'all', gamesSets);
+        } else {
+          console.warn('[TCGPlayer] Failed to fetch games-sets:', response.status);
+          return;
+        }
+      } catch (err) {
+        console.warn('[TCGPlayer] Error fetching games-sets:', err.message);
+        return;
+      }
+    }
+    const gameData = gamesSets.games?.[gameKey];
+    if (!gameData || !gameData.sets || gameData.sets.length === 0) return;
+
+    // Normalize the PriceCharting set name to canonical form
+    const pcCanonical = normalizeSetName(priceChartingSetName);
+
+    // Find TCGPlayer sets that match the canonical form
+    const matchingSets = gameData.sets.filter(set => {
+      const tcgCanonical = normalizeSetName(set.name);
+      return tcgCanonical === pcCanonical;
+    });
+
+    if (matchingSets.length === 0) {
+      return;
+    }
+
+    // Scrape all matching sets (usually just one)
+    for (const tcgSet of matchingSets) {
+      const tcgSetParamName = normalizeToParamName(tcgSet.name);
+
+      // Call server to scrape this game/set
+      const response = await fetch(`${API}/api/tcgplayer/scrape-game-set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gameSlug: gameKey,
+          setParamName: tcgSetParamName,
+          setOriginalName: tcgSet.name
+        })
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Failed to request scrape: ${response.status} ${errText}`);
+      }
+
+    }
+  } catch (err) {
+    console.error(`[TCGPlayer] Error requesting scrape for ${gameKey}/${priceChartingSetName}:`, err.message);
+  }
 }
 
 async function processLoadQueue(gameKey) {
@@ -1403,6 +2004,13 @@ async function processLoadQueue(gameKey) {
 
     if (row && row.closest('tbody')) {
       await loadSetStatsRow(slug, name, row, true);
+    }
+
+    // Also scrape TCGPlayer products for this game/set combination
+    // Find the set name from S.games
+    const setData = S.games[gameKey]?.sets?.find(s => s.slug === slug);
+    if (setData) {
+      await fetchAndStoreTCGPlayerProducts(gameKey, setData.name);
     }
 
     // Remove from queue and in-flight after successful processing
@@ -1437,40 +2045,96 @@ function queueSetLoad(slug, name, row, gameKey = S.game) {
 function updateLoadQueueUI() {
   if (!E.btnLoadAllStats) return;
   const q = getGameQueue(S.game);
-  const total = q.queue.length + (q.processing ? 1 : 0);
-  if (total === 0) {
-    E.btnLoadAllStats.disabled = false;
-    E.btnLoadAllStats.textContent = 'Load All Stats';
+  const totalSets = S.games[S.game]?.sets?.length || 0;
+  const remaining = q.queue.length + (q.inFlight ? 1 : 0);
+  const completed = Math.max(0, totalSets - remaining);
+
+  E.btnLoadAllStats.disabled = false; // Always clickable to start queue
+  if (remaining === 0) {
+    E.btnLoadAllStats.textContent = 'Load All Sets';
   } else {
-    E.btnLoadAllStats.disabled = true;
-    E.btnLoadAllStats.textContent = `Queue: ${total}…`;
+    E.btnLoadAllStats.textContent = `${completed}/${totalSets}`;
   }
 }
 
 async function loadAllStats() {
   const sets = S.games[S.game]?.sets || [];
   if (!sets.length) return;
-  loadAllAbort = false;
-  const q = getGameQueue(S.game);
-  // Clear existing queue to force refresh all
-  q.queue = [];
-  q.inFlight = null;
-  saveQueuesToStorage();
 
+  const q = getGameQueue(S.game);
+
+  // Only start if queue is empty — ignore clicks while queue is running
+  if (q.queue.length > 0 || q.inFlight || q.processing) {
+    return; // Queue already running, do nothing
+  }
+
+  // Queue is empty, start fresh load
+  // First, fetch TCGPlayer games and sets
+
+  // Show spinner on button while fetching
+  const originalText = E.btnLoadAllStats.textContent;
+  E.btnLoadAllStats.disabled = true;
+  E.btnLoadAllStats.textContent = '⏳ Fetching TCGPlayer…';
+
+  try {
+    const response = await fetch(`${API}/api/tcgplayer/games-sets`);
+    if (!response.ok) throw new Error('Failed to fetch games/sets');
+    const data = await response.json();
+
+    // Store in IndexedDB for later use
+    await TCGDb.put('games-sets', 'all', {
+      games: data.games || {},
+      cachedAt: Date.now()
+    });
+  } catch (err) {
+    console.error('[UI] Error fetching TCGPlayer games/sets:', err.message);
+    // Restore button state on error
+    E.btnLoadAllStats.textContent = originalText;
+    E.btnLoadAllStats.disabled = false;
+    return;
+  }
+
+  // Restore button to normal state after fetch succeeds
+  E.btnLoadAllStats.disabled = false;
+  updateLoadQueueUI();
+
+  // Clear TCGPlayer products by game/set cache
+  await TCGDb.clear('tcgplayer-products');
+
+  // Ensure all set rows are rendered before queuing (handle pagination)
+  while (S.pagination.sets.rendered < S.pagination.sets.total) {
+    loadMoreItems('sets');
+  }
+
+  // Queue all sets for loading
+  loadAllAbort = false;
   for (const s of sets) {
     if (loadAllAbort) break;
     const row = E.setsOvTbody?.querySelector(`tr[data-slug="${CSS.escape(s.slug)}"]`);
     if (row) queueSetLoad(s.slug, s.name, row, S.game);
   }
+
+  // Start processing the queue
+  q.processing = true;
+  processLoadQueue(S.game).catch(() => {});
 }
 
 
 async function init() {
+  // Clear all queues on page load — always start fresh
+  localStorage.removeItem(LS_LOAD_QUEUES_KEY);
+
+  // Initialize IndexedDB and run migration
+  await TCGDb.open();
+  await TCGDb.migrateFromLocalStorage();
+
   applyAccent(S.game);
   loadAuthToken();
-  loadStatsFromStorage();
-  loadProductsFromStorage();
-  loadQueuesFromStorage();
+  await loadStatsFromStorage();
+  await loadProductsFromStorage();
+  // Update UI to show cleared queue state
+  updateLoadQueueUI();
+  // NOTE: Don't resume processing yet — wait until after renderSetsOverview() so rows exist
   // Load public on-sale inventory for all users
   await loadInventory();
   if (S.authToken) {
@@ -1507,6 +2171,15 @@ async function init() {
 
     // Restore from URL path (must be after S.games is loaded)
     await restoreFromUrl();
+
+    // Disable queue resume on refresh — queue will be cleared instead
+    // restoreQueueUI();
+    // const q = getGameQueue(S.game);
+    // if (q.queue.length > 0 || q.inFlight) {
+    //   console.log('[Queue] Resuming queue after page refresh');
+    //   processLoadQueue(S.game);
+    // }
+
 
     // Listen for back/forward navigation
     window.addEventListener('popstate', restoreFromUrl);
@@ -1816,21 +2489,6 @@ function updateCartCount() {
   E.cartCount.style.display = S.cart.size > 0 ? 'block' : 'none';
 }
 
-function updateStockDisplay(game, slug, cardId, grading) {
-  // Find and update the table row for this item
-  const rowId = `${game}-${slug}-${cardId}-${grading}`;
-  const row = E.saleTbody.querySelector(`[data-card-id="${rowId}"]`);
-  if (row) {
-    const item = S.adminInventory.find(i => i.game === game && i.set_slug === slug && i.card_number === cardId && i.grading === grading);
-    if (item) {
-      const stockCell = row.querySelector('.td-stock');
-      if (stockCell) {
-        stockCell.textContent = item.available_stock;
-      }
-    }
-  }
-}
-
 function renderCartUI() {
   const items = Array.from(S.cart.values());
   let total = 0;
@@ -2093,19 +2751,27 @@ function renderCardsBatch(startIdx, endIdx) {
     const stockLabel = stockQty === 0 ? 'Out of stock' : `${stockQty} in stock`;
     const stockClass = stockQty === 0 ? 'stock-out' : 'stock-in';
 
-    // Get TCGPlayer data if available
+    // Get TCGPlayer data if available (per-set pricing)
     const tcg = S.tcgCards.get(normName(card.name));
     const tuClass = tcg?.ungraded === '—' || !tcg ? 'price price-nil' : 'price price-u';
     const tg9Class = tcg?.grade9 === '—' || !tcg ? 'price price-nil' : 'price price-g9';
     const tp10Class = tcg?.psa10 === '—' || !tcg ? 'price price-nil' : 'price price-p10';
 
-    // Build combined price cells with both PC and TCG
+    // Get TCGPlayer global product metadata if available (exact match, then fuzzy fallback)
+    const tcgProduct = lookupTcgProduct(card.name);
+    if (startIdx === 0 && batchCards.indexOf(card) < 3) {
+    }
+    const tcgProdClass = tcgProduct?.marketPrice ? 'price price-u' : 'price price-nil';
+    const tcgProdPrice = tcgProduct?.marketPrice ? `$${tcgProduct.marketPrice.toFixed(2)}` : '—';
+
+    // Build combined price cells with PC, per-set TCG, and global TCG product data
     const ungradedHtml = `
       <div class="price-source">
         <span class="source-label source-pc">PC</span>
         <span class="${u2Class}">${esc(card.ungraded)}</span>
       </div>
-      ${tcg ? `<div class="price-source"><span class="source-label source-tcg">TCG</span><span class="${tuClass}">${esc(tcg.ungraded)}</span></div>` : ''}`;
+      ${tcg ? `<div class="price-source"><span class="source-label source-tcg">TCG</span><span class="${tuClass}">${esc(tcg.ungraded)}</span></div>` : ''}
+      ${tcgProduct ? `<div class="price-source"><span class="source-label source-tcg">TCG</span><span class="${tcgProdClass}">${tcgProdPrice}</span></div>` : ''}`;
 
     const grade9Html = `
       <div class="price-source">
@@ -2131,6 +2797,7 @@ function renderCardsBatch(startIdx, endIdx) {
       <td>
         <a class="card-link" href="${escA(card.url)}" target="_blank" rel="noopener">${esc(card.name)}</a>
         ${tcg ? `<br><a class="source-link source-tcg" href="${escA(tcg.url)}" target="_blank" rel="noopener" style="font-size:0.7rem">TCGPlayer ↗</a>` : ''}
+        ${tcgProduct && !tcg ? `<br><a class="source-link source-tcg" href="${escA(tcgProduct.url)}" target="_blank" rel="noopener" style="font-size:0.7rem">TCGPlayer ↗</a>` : ''}
       </td>
       <td class="td-stock"><span class="stock-badge ${stockClass}">${esc(stockLabel)}</span></td>
       <td class="td-price">${ungradedHtml}</td>

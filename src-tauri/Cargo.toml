@@ -1,6 +1,6 @@
 [package]
 name = "tcg-price-tracker"
-version = "1.0.0"
+version = "1.1.0"
 description = "TCG Price Tracker Desktop App"
 authors = []
 edition = "2021"

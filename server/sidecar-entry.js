@@ -7,4 +7,7 @@ const path = require('path');
 // Load .env from the bundled path (caxa extracts to a temp dir with the full project structure)
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-require('./server.js');
+(async () => {
+  await require('../db/init')();
+  require('./server.js');
+})();
