@@ -19,6 +19,217 @@ Live card price dashboard for 10 TCG games (Pokémon, MTG, Yu-Gi-Oh, One Piece, 
 
 ---
 
+## Data Flow Architecture
+
+### Overview
+
+The application pulls card pricing data from **two sources**:
+
+1. **PriceCharting** — Scraped via HTTP requests (fast, hourly cached)
+2. **TCGPlayer** — Scraped via Puppeteer (game/set discovery, optional product details)
+
+Both flows feed into a **cache layer**, **PostgreSQL database** (user data, inventory), and **client-side IndexedDB** (browser cache).
+
+---
+
+### Data Flow 1: PriceCharting Card Scraping
+
+```
+User requests cards for a set
+        ↓
+Browser: GET /api/set?slug=pokemon-base-set
+        ↓
+Server: Check cardCache (1 hour TTL, 50k entry LRU limit)
+        ↓
+    [Cache HIT] → Return cached data, fromCache: true
+        OR
+    [Cache MISS/STALE] → Scrape PriceCharting
+        ↓
+fetchSetPages(slug) / fetchSetPagesFresh(slug)
+        ↓
+httpGet() → PriceCharting category page (e.g., /console/pokemon-base-set)
+        ↓
+Parse HTML: Extract card rows
+  - Card name, card ID, image URL
+  - Ungraded price, Grade 9 price, PSA 10 price
+  - Determine if sealed product (booster box, etc.)
+        ↓
+Paginate: POST requests with cursor to load more cards (if >50 per page)
+  - Loop until no more results
+        ↓
+Store in cardCache: { slug, title, cards[], count, sealedCount, fetchedAt }
+        ↓
+Return to client: { cards: [...], fromCache: false, cachedAt: null }
+        ↓
+Client: Store in IndexedDB, render UI
+```
+
+**Cache Behavior:**
+- On fetch error: Return stale cache if available (graceful degradation)
+- Only cache non-empty results
+- LRU eviction when cache reaches 50k entries
+
+---
+
+### Data Flow 2: TCGPlayer Game & Set Discovery
+
+```
+App startup / User browses games
+        ↓
+Browser: GET /api/tcgplayer/games-sets
+        ↓
+Server: Check tcgGamesSetCache (24 hour TTL)
+        ↓
+    [Cache HIT] → Return cached { games, sets }
+        OR
+    [Cache MISS/STALE] → Launch Puppeteer and scrape
+        ↓
+fetchTCGPlayerGamesAndSets()
+        ↓
+For each of 11 games:
+  - Navigate to TCGPlayer game page
+  - Extract all available sets
+  - Normalize set names (remove "Promo", "Pre-Release" suffixes)
+  - Filter to prefer non-promo variants when duplicates exist
+  - Convert to canonical form: { canonical, paramName, slug }
+        ↓
+Store in tcgGamesSetCache: { games: {...}, sets: [...], fetchedAt }
+        ↓
+Return to client: { games, sets }
+        ↓
+Client: Cache in IndexedDB, populate game/set dropdowns
+```
+
+**Promo Filtering Logic:**
+- Groups sets by canonical name (e.g., "ME01: Mega Evolution" and "ME01: Mega Evolution Promo" → "me01-mega-evolution")
+- Keeps only non-promo variant (or single variant if no promo exists)
+- Prevents duplicate set entries and ensures correct URL parameter generation
+
+---
+
+### Data Flow 3: TCGPlayer Product Scraping (On-Demand)
+
+```
+User selects a game/set combination
+        ↓
+Browser: POST /api/tcgplayer/scrape-game-set
+  { gameSlug: "pokemon", setParamName: "base-set", setOriginalName: "Base Set" }
+        ↓
+Server: Return 202 Accepted immediately
+        ↓
+Background: enqueueScrape() → queue for processing (one at a time)
+        ↓
+scrapeTCGPlayerGameSet()
+        ↓
+Launch Puppeteer page
+  - Navigate to TCGPlayer game/set URL
+  - Execute JavaScript to load card grid
+  - Wait for cards to render
+  - Extract all visible product rows: name, number, price
+        ↓
+For each card found:
+  - Match against PriceCharting cards (by name + card number)
+  - If match found: Merge prices from both sources
+  - If only TCGPlayer: Include with TCGPlayer prices only
+  - Handle specialty variants (e.g., [GameStop], [Stamped]) → PriceCharting only, skip TCGPlayer match
+        ↓
+Emit socket.io events: "scrape_progress", "scrape_complete"
+        ↓
+Client: Receives real-time updates, displays merged card data
+```
+
+**Matching Logic:**
+- Requires both card name AND product number match
+- Uses strict comparison to avoid false positives
+- Specialty brackets (e.g., [GameStop]) → Return PriceCharting-only prices
+
+---
+
+### Data Flow 4: User Data & Shopping Cart
+
+```
+User Registration/Login
+        ↓
+POST /api/auth/register or /api/auth/login
+        ↓
+Server: Hash password (bcrypt), store in PostgreSQL users table
+        ↓
+Return JWT token: { token, userId, email, isAdmin }
+        ↓
+Client: Store JWT in localStorage, include in subsequent requests
+        ↓
+
+User browses and adds to cart
+        ↓
+Client: Store in IndexedDB (persists across sessions)
+  - { gameSlug, setSlug, cardNumber, grading, quantity }
+        ↓
+User clicks checkout
+        ↓
+POST /api/checkout/session { cartItems: [...] }
+        ↓
+Server: Create Stripe checkout session
+        ↓
+Return sessionId → Redirect to Stripe Checkout
+        ↓
+Stripe payment completed → Webhook to /api/webhooks/stripe
+        ↓
+Server: Create order in PostgreSQL, clear cart
+        ↓
+Client: Redirect to success page
+```
+
+---
+
+### Data Flow 5: Admin Inventory Management
+
+```
+Admin adds card to inventory
+        ↓
+POST /api/admin/inventory/add
+  Headers: Authorization: Bearer ADMIN_API_KEY or JWT(isAdmin: true)
+  Body: { game, set_slug, card_number, grading, quantity_available, price_cents }
+        ↓
+Server: Validate API key or JWT admin status
+        ↓
+INSERT into PostgreSQL inventory table
+        ↓
+GET /api/inventory (public endpoint)
+        ↓
+Returns in-stock items for shopping cart display
+```
+
+---
+
+### Data Flow 6: Sets Cache Refresh
+
+```
+Server startup
+        ↓
+initSetsCache()
+        ↓
+For each of 10 games:
+  - scrapeSetsFromCategory(gameKey)
+  - Fetch PriceCharting category page
+  - Extract all set links and names
+  - Filter out console noise (retro gaming)
+  - Store in setsCache: { sets: [...], fetchedAt }
+        ↓
+scheduleHourlyRefresh()
+        ↓
+Every 1 hour:
+  - Repeat scraping for all games
+  - Update setsCache
+  - Silent failure: If scrape fails, keep old cache
+        ↓
+
+GET /api/data/{game}/{set}
+        ↓
+Server: Lookup in setsCache, return { sets: [...] }
+```
+
+---
+
 ## Installation
 
 ### Prerequisites
@@ -201,6 +412,10 @@ curl -X POST http://localhost:3847/api/admin/inventory \
 - `DELETE /api/cart/remove` — Remove from cart
 - `POST /api/checkout/session` — Create Stripe checkout
 - `GET /api/inventory` — Public inventory (in-stock items)
+- `GET /api/tcgplayer/games-sets` — Get TCGPlayer games and sets
+- `POST /api/tcgplayer/scrape-game-set` — Enqueue scraping for a game/set
+- `GET /api/set?slug=...` — Get card details for a PriceCharting set
+- `GET /api/cache-status` — View cache state (debug endpoint)
 
 ### Admin Endpoints (API Key or JWT with `is_admin: true`)
 
