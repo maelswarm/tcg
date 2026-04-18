@@ -2061,7 +2061,6 @@ function queueSetLoad(slug, name, row, gameKey = S.game) {
   if (gameKey === S.game) {
     updateLoadQueueUI();
   }
-  processLoadQueue(gameKey);
 }
 
 function updateLoadQueueUI() {
@@ -2137,7 +2136,6 @@ async function loadAllStats() {
   }
 
   // Start processing the queue
-  q.processing = true;
   processLoadQueue(S.game).catch(() => {});
 }
 

@@ -1277,7 +1277,7 @@ appkit-button::part(button) {
 }
 .modal-content {
   position: relative;
-  background: var(--surf1);
+  background: var(--surf3);
   border: 1px solid var(--color-border);
   border-radius: var(--r-lg);
   padding: 1.5rem;
@@ -1404,7 +1404,7 @@ appkit-button::part(button) {
 }
 
 #cart-list > div:hover, .inv-mgmt-row:hover {
-  background: var(--surf1);
+  background: var(--surf2);
 }
 
 .cart-qty-input, .inv-mgmt-qty, .inv-mgmt-price {
