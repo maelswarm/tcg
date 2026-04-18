@@ -24,8 +24,21 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag=v$VERSION" >> $GITHUB_OUTPUT
 
-  build-windows:
+  create-release:
     needs: get-version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ needs.get-version.outputs.tag }} \
+            --title "v${{ needs.get-version.outputs.version }}" \
+            --generate-notes \
+            --repo ${{ github.repository }} 2>/dev/null || true
+
+  build-windows:
+    needs: [get-version, create-release]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,13 +69,10 @@ jobs:
         run: |
           exe=$(find src-tauri/target/release/bundle/nsis -name "*.exe" | head -n 1)
           gh release upload ${{ needs.get-version.outputs.tag }} "$exe" \
-            --repo ${{ github.repository }} --clobber || \
-          gh release create ${{ needs.get-version.outputs.tag }} "$exe" \
-            --title "v${{ needs.get-version.outputs.version }}" \
-            --generate-notes
+            --repo ${{ github.repository }} --clobber
 
   build-macos:
-    needs: get-version
+    needs: [get-version, create-release]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -95,7 +105,4 @@ jobs:
         run: |
           dmg=$(find src-tauri/target/release/bundle/dmg -name "*.dmg" | head -n 1)
           gh release upload ${{ needs.get-version.outputs.tag }} "$dmg" \
-            --repo ${{ github.repository }} --clobber || \
-          gh release create ${{ needs.get-version.outputs.tag }} "$dmg" \
-            --title "v${{ needs.get-version.outputs.version }}" \
-            --generate-notes
+            --repo ${{ github.repository }} --clobber
