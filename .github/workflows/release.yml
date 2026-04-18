@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -16,6 +19,10 @@ jobs:
       tag: ${{ steps.extract.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       - name: Extract version
         id: extract
@@ -70,6 +77,10 @@ jobs:
         shell: bash
         run: |
           exe=$(find src-tauri/target/release/bundle/nsis -name "*.exe" | head -n 1)
+          if [ -z "$exe" ]; then
+            echo "ERROR: Windows installer not found at src-tauri/target/release/bundle/nsis"
+            exit 1
+          fi
           gh release upload ${{ needs.get-version.outputs.tag }} "$exe" \
             --repo ${{ github.repository }} --clobber
 
@@ -106,5 +117,9 @@ jobs:
         shell: bash
         run: |
           dmg=$(find src-tauri/target/release/bundle/dmg -name "*.dmg" | head -n 1)
+          if [ -z "$dmg" ]; then
+            echo "ERROR: macOS installer not found at src-tauri/target/release/bundle/dmg"
+            exit 1
+          fi
           gh release upload ${{ needs.get-version.outputs.tag }} "$dmg" \
             --repo ${{ github.repository }} --clobber
