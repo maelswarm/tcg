@@ -1,0 +1,101 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      tag: ${{ steps.extract.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: extract
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
+  build-windows:
+    needs: get-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Windows sidecar
+        run: npm run build:sidecar:win
+
+      - name: Build Tauri Windows installer
+        run: npx tauri build --bundles nsis
+
+      - name: Upload Windows installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          exe=$(find src-tauri/target/release/bundle/nsis -name "*.exe" | head -n 1)
+          gh release upload ${{ needs.get-version.outputs.tag }} "$exe" \
+            --repo ${{ github.repository }} --clobber || \
+          gh release create ${{ needs.get-version.outputs.tag }} "$exe" \
+            --title "v${{ needs.get-version.outputs.version }}" \
+            --generate-notes
+
+  build-macos:
+    needs: get-version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build macOS sidecar (arm64)
+        run: npm run build:sidecar:mac-arm
+
+      - name: Build Tauri macOS DMG
+        run: |
+          npx tauri build --bundles dmg \
+            --config '{"build":{"beforeBuildCommand":""}}'
+
+      - name: Upload macOS DMG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          dmg=$(find src-tauri/target/release/bundle/dmg -name "*.dmg" | head -n 1)
+          gh release upload ${{ needs.get-version.outputs.tag }} "$dmg" \
+            --repo ${{ github.repository }} --clobber || \
+          gh release create ${{ needs.get-version.outputs.tag }} "$dmg" \
+            --title "v${{ needs.get-version.outputs.version }}" \
+            --generate-notes
