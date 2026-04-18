@@ -28,14 +28,16 @@ jobs:
     needs: get-version
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          gh release view ${{ needs.get-version.outputs.tag }} -R ${{ github.repository }} >/dev/null 2>&1 || \
           gh release create ${{ needs.get-version.outputs.tag }} \
             --title "v${{ needs.get-version.outputs.version }}" \
             --generate-notes \
-            --repo ${{ github.repository }} 2>/dev/null || true
+            -R ${{ github.repository }}
 
   build-windows:
     needs: [get-version, create-release]
