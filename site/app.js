@@ -3,10 +3,7 @@
    10 games · All sets · Live from PriceCharting
    ═══════════════════════════════════════════════════ */
 
-const API = (() => {
-  const h = location.hostname;
-  return (h === 'localhost' || h === '127.0.0.1') ? `http://${h}:3847` : '';
-})();
+const API = `http://${location.hostname}:3847`;
 
 let socket = null;
 

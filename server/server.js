@@ -8221,7 +8221,7 @@ io.emit = function(event, ...args) {
   return originalEmit(event, ...args);
 };
 
-server.listen(PORT, async () => {
+server.listen(PORT, '127.0.0.1', async () => {
   // Initialize PriceCharting cache only on startup
   // TCGPlayer games/sets are now fetched on-demand via API endpoint
   await initSetsCache().catch(() => {});
